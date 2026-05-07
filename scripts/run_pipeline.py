@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.market_client import MarketClient
+from core.email_reporter import EmailConfig, send_daily_report
 from core.loader import load_symbols
 from core.market_calendar import (
     get_market_local_now,
@@ -178,7 +179,14 @@ def build_finished_windows(markets: list[str], now: datetime, state: RuntimeStat
             state.record_error("metrics", exc)
 
 
-def build_daily_after_close(markets: list[str], now: datetime, state: RuntimeState, logger, force: bool = False) -> None:
+def build_daily_after_close(
+    markets: list[str],
+    now: datetime,
+    state: RuntimeState,
+    logger,
+    force: bool = False,
+    email_config: EmailConfig | None = None,
+) -> None:
     for market in markets:
         trading_date = market_date(market, now)
         windows = get_market_windows(market, trading_date)
@@ -194,20 +202,51 @@ def build_daily_after_close(markets: list[str], now: datetime, state: RuntimeSta
             continue
         daily_path = output_dir / "daily.json"
         quality_path = BASE_DIR / "data" / "quality" / market / f"{trading_date}.json"
-        if not should_build_daily(market, now, BASE_DIR, force_rebuild=force):
-            logger.info("skip daily because no build needed or input missing: %s %s", market, trading_date)
-            continue
         try:
             if not (daily_path.exists() and quality_path.exists() and not force):
+                if not should_build_daily(market, now, BASE_DIR, force_rebuild=force):
+                    logger.info("skip daily because no build needed or input missing: %s %s", market, trading_date)
+                    continue
                 daily_day(market, trading_date)
                 quality_day(market, trading_date)
                 state.mark_daily_done(market, trading_date)
                 logger.info("built daily and quality: %s %s", daily_path, quality_path)
+            send_daily_report_after_close(email_config, market, trading_date, daily_path, quality_path, state, logger)
         except FileNotFoundError as exc:
             logger.info("daily skipped because input missing: %s", exc)
         except Exception as exc:
             logger.exception("daily/quality failed for %s %s", market, trading_date)
             state.record_error("daily_quality", exc)
+
+
+def send_daily_report_after_close(
+    email_config: EmailConfig | None,
+    market: str,
+    trading_date: str,
+    daily_path: Path,
+    quality_path: Path,
+    state: RuntimeState,
+    logger,
+) -> None:
+    if email_config is None or not email_config.enabled:
+        return
+    if not email_config.is_ready():
+        logger.info("skip email because config incomplete: %s %s", market, trading_date)
+        return
+    if state.email_report_sent(market, trading_date):
+        logger.info("skip email because report already sent: %s %s", market, trading_date)
+        return
+    if not (daily_path.exists() and quality_path.exists()):
+        logger.info("skip email because daily or quality missing: %s %s", market, trading_date)
+        return
+
+    try:
+        send_daily_report(email_config, BASE_DIR, market, trading_date)
+        state.mark_email_report_sent(market, trading_date)
+        logger.info("sent daily email report: %s %s", market, trading_date)
+    except Exception as exc:
+        logger.exception("email report failed for %s %s", market, trading_date)
+        state.record_error("email_report", exc)
 
 
 def main() -> None:
@@ -227,6 +266,7 @@ def main() -> None:
     force_rebuild = os.getenv("PIPELINE_FORCE_REBUILD", "false").lower() == "true"
     reference_force_rebuild = os.getenv("REFERENCE_FORCE_REBUILD", "false").lower() == "true"
     reference_build_on_market_open = os.getenv("REFERENCE_BUILD_ON_MARKET_OPEN", "true").lower() == "true"
+    email_config = EmailConfig.from_env(os.environ)
     loop_sleep = int(os.getenv("PIPELINE_LOOP_SLEEP_SECONDS", "10"))
     output_dir = Path(os.getenv("DATA_COLLECTION_OUTPUT_DIR", "data/raw"))
     if not output_dir.is_absolute():
@@ -262,7 +302,7 @@ def main() -> None:
                 last_collect = now
 
             build_finished_windows(markets, now, state, logger, force=force_rebuild)
-            build_daily_after_close(markets, now, state, logger, force=force_rebuild)
+            build_daily_after_close(markets, now, state, logger, force=force_rebuild, email_config=email_config)
         except Exception as exc:
             logger.exception("pipeline loop failed")
             state.record_error("pipeline_loop", exc)

@@ -72,6 +72,7 @@ class RuntimeState:
                 "last_collect_time": None,
                 "last_metrics_window": {},
                 "last_daily_build": {},
+                "last_email_report": {},
                 "collect_stats": {},
                 "last_successful_run": None,
                 "error_count": 0,
@@ -102,6 +103,15 @@ class RuntimeState:
         key = f"{market}:{trading_date}"
         self.data.setdefault("last_daily_build", {})[key] = utc_now_text()
         self.mark_success("last_quality_time")
+
+    def email_report_sent(self, market: str, trading_date: str) -> bool:
+        key = f"{market}:{trading_date}"
+        return key in self.data.setdefault("last_email_report", {})
+
+    def mark_email_report_sent(self, market: str, trading_date: str) -> None:
+        key = f"{market}:{trading_date}"
+        self.data.setdefault("last_email_report", {})[key] = utc_now_text()
+        self.mark_success("last_email_report_time")
 
     def record_collect_success(self, market: str, trading_date: str, output_path: str) -> None:
         stats = self._collect_stats(market, trading_date)
