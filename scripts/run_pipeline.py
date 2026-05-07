@@ -21,6 +21,7 @@ from core.market_calendar import (
     should_collect_market,
 )
 from core.market_data_store import DailyJsonlMarketDataStore
+from core.reference_data_store import ReferenceDataStore, filter_symbols_by_market
 from core.trading_hours import filter_symbols_by_open_markets
 from core.data_pipeline import (
     BASE_DIR,
@@ -59,6 +60,47 @@ def collect_job(
 ) -> None:
     for market in markets:
         collect_market(collector, symbols, market, now, state, logger)
+
+
+def build_reference_for_open_markets(
+    market_client: MarketClient,
+    store: ReferenceDataStore,
+    symbols: list[str],
+    markets: list[str],
+    now: datetime,
+    logger,
+    force: bool = False,
+    build_on_market_open: bool = True,
+) -> None:
+    if not build_on_market_open:
+        return
+
+    for market in markets:
+        trading_date = market_date(market, now)
+        if not should_collect_market(market, now):
+            continue
+        path = store.reference_path(market, trading_date)
+        if path.exists() and not force:
+            logger.info("skip reference because file exists: %s %s", market, trading_date)
+            continue
+
+        market_symbols = filter_symbols_by_market(symbols, market)
+        if not market_symbols:
+            logger.info("skip reference because no symbols configured: %s %s", market, trading_date)
+            continue
+
+        try:
+            reference_data = market_client.fetch_reference_data(market_symbols)
+            output_path = store.write_reference(
+                market=market,
+                trading_date=trading_date,
+                provider=market_client.provider,
+                symbols=market_symbols,
+                reference_data=reference_data,
+            )
+            logger.info("built reference data: %s", output_path)
+        except Exception as exc:
+            logger.exception("reference build failed for %s %s", market, trading_date)
 
 
 def collect_market(
@@ -183,15 +225,19 @@ def main() -> None:
     provider = os.getenv("MARKET_DATA_PROVIDER", "longbridge")
     interval_seconds = int(os.getenv("DATA_COLLECTION_INTERVAL_SECONDS", "120"))
     force_rebuild = os.getenv("PIPELINE_FORCE_REBUILD", "false").lower() == "true"
+    reference_force_rebuild = os.getenv("REFERENCE_FORCE_REBUILD", "false").lower() == "true"
+    reference_build_on_market_open = os.getenv("REFERENCE_BUILD_ON_MARKET_OPEN", "true").lower() == "true"
     loop_sleep = int(os.getenv("PIPELINE_LOOP_SLEEP_SECONDS", "10"))
     output_dir = Path(os.getenv("DATA_COLLECTION_OUTPUT_DIR", "data/raw"))
     if not output_dir.is_absolute():
         output_dir = BASE_DIR / output_dir
+    market_client = MarketClient(provider=provider)
     collector = MarketDataCollector(
-        market_client=MarketClient(provider=provider),
+        market_client=market_client,
         store=DailyJsonlMarketDataStore(output_dir=output_dir),
         interval_seconds=interval_seconds,
     )
+    reference_store = ReferenceDataStore(BASE_DIR)
 
     last_collect = datetime.min.replace(tzinfo=UTC)
     markets = ["HK", "US"]
@@ -201,6 +247,16 @@ def main() -> None:
         now = datetime.now(UTC)
         try:
             if (now - last_collect).total_seconds() >= interval_seconds:
+                build_reference_for_open_markets(
+                    market_client=market_client,
+                    store=reference_store,
+                    symbols=symbols,
+                    markets=markets,
+                    now=now,
+                    logger=logger,
+                    force=reference_force_rebuild,
+                    build_on_market_open=reference_build_on_market_open,
+                )
                 collect_job(collector, symbols, markets, now, state, logger)
                 normalize_existing_raw(markets, now, state, logger)
                 last_collect = now

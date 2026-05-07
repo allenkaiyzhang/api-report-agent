@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import logging
 from random import Random
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -17,14 +21,18 @@ class MarketData:
     timestamp: str
 
     def to_dict(self) -> dict[str, Any]:
+        market = "HK" if self.symbol.upper().endswith(".HK") else "US"
         return {
             "symbol": self.symbol,
+            "market": market,
             "latest_price": self.latest_price,
+            "last_price": self.latest_price,
             "previous_close": self.previous_close,
             "change_percent": self.change_percent,
             "volume": self.volume,
-            "avg_volume_20d": self.avg_volume_20d,
             "timestamp": self.timestamp,
+            "event_time": self.timestamp,
+            "currency": "HKD" if market == "HK" else "USD",
         }
 
 
@@ -47,9 +55,44 @@ class MarketClient:
         self._longbridge_quote_context: Any | None = None
 
     def fetch_quotes(self, symbols: list[str]) -> list[dict[str, Any]]:
+        return self.fetch_realtime_quotes(symbols)
+
+    def fetch_realtime_quotes(self, symbols: list[str]) -> list[dict[str, Any]]:
         if self.provider == "longbridge":
-            return self._fetch_longbridge_quotes(symbols)
+            return self._fetch_longbridge_realtime_quotes(symbols)
         return [self.fetch_quote(symbol).to_dict() for symbol in symbols]
+
+    def fetch_reference_data(self, symbols: list[str]) -> dict[str, Any]:
+        if self.provider == "longbridge":
+            return self._fetch_longbridge_reference_data(symbols)
+
+        static_info_by_symbol = {
+            symbol: {
+                "currency": "HKD" if symbol.upper().endswith(".HK") else "USD",
+            }
+            for symbol in symbols
+        }
+        calc_indexes_by_symbol = {}
+        daily_candlesticks_by_symbol = {}
+        for symbol in symbols:
+            _, _, volume, avg_volume_20d = self._mock_values(symbol)
+            daily_candlesticks_by_symbol[symbol] = [
+                {
+                    "close": self.fetch_quote(symbol).latest_price,
+                    "open": self.fetch_quote(symbol).previous_close,
+                    "low": min(self.fetch_quote(symbol).latest_price, self.fetch_quote(symbol).previous_close),
+                    "high": max(self.fetch_quote(symbol).latest_price, self.fetch_quote(symbol).previous_close),
+                    "volume": avg_volume_20d or volume,
+                    "turnover": 0.0,
+                    "timestamp": datetime.now(UTC).date().isoformat(),
+                    "trade_session": "",
+                }
+            ]
+        return {
+            "static_info_by_symbol": static_info_by_symbol,
+            "calc_indexes_by_symbol": calc_indexes_by_symbol,
+            "daily_candlesticks_by_symbol": daily_candlesticks_by_symbol,
+        }
 
     def fetch_quote(self, symbol: str) -> MarketData:
         if self.provider != "mock":
@@ -81,19 +124,17 @@ class MarketClient:
         volume = int(avg_volume_20d * rng.uniform(0.6, 1.8))
         return latest_price, previous_close, volume, avg_volume_20d
 
-    def _fetch_longbridge_quotes(self, symbols: list[str]) -> list[dict[str, Any]]:
+    def _fetch_longbridge_realtime_quotes(self, symbols: list[str]) -> list[dict[str, Any]]:
         ctx = self._get_longbridge_quote_context()
-        quotes = ctx.quote(symbols)
-
-        static_info_by_symbol = self._safe_static_info(ctx, symbols)
-        calc_indexes_by_symbol = self._safe_calc_indexes(ctx, symbols)
+        try:
+            quotes = ctx.quote(symbols)
+        except Exception as exc:
+            logger.error("Longbridge realtime quote failed: %s", exc)
+            return []
 
         records = []
         for quote in quotes:
             symbol = str(getattr(quote, "symbol"))
-            daily_candlesticks = self._safe_daily_candlesticks(ctx, symbol, count=20)
-            avg_volume_20d = self._average_volume(daily_candlesticks)
-
             latest_price = self._to_float(getattr(quote, "last_done", 0))
             previous_close = self._to_float(getattr(quote, "prev_close", 0))
             change_percent = self._calculate_change_percent(latest_price, previous_close)
@@ -101,28 +142,41 @@ class MarketClient:
 
             record = {
                 "symbol": symbol,
+                "market": self._infer_market(symbol),
                 "latest_price": round(latest_price, 4),
+                "last_price": round(latest_price, 4),
                 "previous_close": round(previous_close, 4),
                 "change_percent": round(change_percent, 2),
                 "volume": volume,
-                "avg_volume_20d": avg_volume_20d,
                 "timestamp": self._stringify(getattr(quote, "timestamp", datetime.now(UTC))),
+                "event_time": self._stringify(getattr(quote, "timestamp", datetime.now(UTC))),
                 "open": self._to_float(getattr(quote, "open", 0)),
                 "high": self._to_float(getattr(quote, "high", 0)),
                 "low": self._to_float(getattr(quote, "low", 0)),
                 "turnover": self._to_float(getattr(quote, "turnover", 0)),
+                "bid": self._to_float(getattr(quote, "bid", 0)),
+                "ask": self._to_float(getattr(quote, "ask", 0)),
                 "trade_status": self._stringify(getattr(quote, "trade_status", "")),
-                "pre_market_quote": self._serialize_optional_quote(getattr(quote, "pre_market_quote", None)),
-                "post_market_quote": self._serialize_optional_quote(getattr(quote, "post_market_quote", None)),
-                "overnight_quote": self._serialize_optional_quote(getattr(quote, "overnight_quote", None)),
-                "static_info": static_info_by_symbol.get(symbol, {}),
-                "calc_indexes": calc_indexes_by_symbol.get(symbol, {}),
-                "daily_candlesticks": daily_candlesticks,
+                "currency": self._stringify(getattr(quote, "currency", "")),
                 "market_data_provider": "longbridge",
             }
             records.append(record)
 
         return records
+
+    def _fetch_longbridge_reference_data(self, symbols: list[str]) -> dict[str, Any]:
+        ctx = self._get_longbridge_quote_context()
+        static_info_by_symbol = self._safe_static_info(ctx, symbols)
+        calc_indexes_by_symbol = self._safe_calc_indexes(ctx, symbols)
+        daily_candlesticks_by_symbol = {
+            symbol: self._safe_daily_candlesticks(ctx, symbol, count=20)
+            for symbol in symbols
+        }
+        return {
+            "static_info_by_symbol": static_info_by_symbol,
+            "calc_indexes_by_symbol": calc_indexes_by_symbol,
+            "daily_candlesticks_by_symbol": daily_candlesticks_by_symbol,
+        }
 
     def _get_longbridge_quote_context(self) -> Any:
         if self._longbridge_quote_context is not None:
@@ -143,7 +197,7 @@ class MarketClient:
         try:
             rows = ctx.static_info(symbols)
         except Exception as exc:
-            print(f"Longbridge static_info failed: {exc}")
+            logger.warning("Longbridge static_info failed: %s", exc)
             return {}
 
         return {
@@ -180,7 +234,7 @@ class MarketClient:
             ]
             rows = ctx.calc_indexes(symbols, indexes)
         except Exception as exc:
-            print(f"Longbridge calc_indexes failed: {exc}")
+            logger.warning("Longbridge calc_indexes failed: %s", exc)
             return {}
 
         return {
@@ -204,7 +258,7 @@ class MarketClient:
 
             rows = ctx.candlesticks(symbol, Period.Day, count, AdjustType.NoAdjust)
         except Exception as exc:
-            print(f"Longbridge candlesticks failed for {symbol}: {exc}")
+            logger.warning("Longbridge candlesticks failed for %s: %s", symbol, exc)
             return []
 
         return [
@@ -239,6 +293,9 @@ class MarketClient:
         if not volumes:
             return 0
         return int(sum(volumes) / len(volumes))
+
+    def _infer_market(self, symbol: str) -> str:
+        return "HK" if symbol.upper().endswith(".HK") else "US"
 
     def _calculate_change_percent(self, latest_price: float, previous_close: float) -> float:
         if previous_close == 0:

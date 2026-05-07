@@ -13,8 +13,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.market_client import MarketClient
 from core.market_data_store import DailyJsonlMarketDataStore
+from core.reference_data_store import ReferenceDataStore
 from core.trading_hours import filter_symbols_by_open_markets, open_markets
 from scripts.market_data_collector import MarketDataCollector
+from scripts.run_pipeline import build_reference_for_open_markets
 
 
 class MarketDataCollectorTest(unittest.TestCase):
@@ -63,6 +65,59 @@ class MarketDataCollectorTest(unittest.TestCase):
         record = json.loads(lines[0])
         self.assertEqual(record["provider"], "mock")
         self.assertEqual(record["symbol"], "QQQ")
+        self.assertNotIn("daily_candlesticks", record)
+        self.assertNotIn("static_info", record)
+        self.assertNotIn("avg_volume_20d", record)
+
+    def test_reference_data_contains_daily_candlesticks_by_symbol(self) -> None:
+        client = MarketClient(provider="mock")
+        reference = client.fetch_reference_data(["QQQ.US"])
+
+        self.assertIn("daily_candlesticks_by_symbol", reference)
+        self.assertIn("QQQ.US", reference["daily_candlesticks_by_symbol"])
+        self.assertTrue(reference["daily_candlesticks_by_symbol"]["QQQ.US"])
+
+    def test_reference_file_skips_when_existing_and_force_overwrites(self) -> None:
+        class CountingClient(MarketClient):
+            def __init__(self) -> None:
+                super().__init__(provider="mock")
+                self.calls = 0
+
+            def fetch_reference_data(self, symbols: list[str]) -> dict:
+                self.calls += 1
+                return {
+                    "static_info_by_symbol": {"QQQ.US": {"currency": "USD", "calls": self.calls}},
+                    "calc_indexes_by_symbol": {},
+                    "daily_candlesticks_by_symbol": {"QQQ.US": [{"close": self.calls}]},
+                }
+
+        client = CountingClient()
+        store = ReferenceDataStore(PROJECT_ROOT / "tests" / "reference_output_test")
+        if store.base_dir.exists():
+            shutil.rmtree(store.base_dir)
+        us_open = datetime(2026, 5, 7, 10, 0, tzinfo=ZoneInfo("America/New_York"))
+
+        build_reference_for_open_markets(client, store, ["QQQ.US"], ["US"], us_open, logger=_NullLogger())
+        path = store.reference_path("US", "2026-05-07")
+        first = json.loads(path.read_text(encoding="utf-8"))
+        build_reference_for_open_markets(client, store, ["QQQ.US"], ["US"], us_open, logger=_NullLogger())
+        second = json.loads(path.read_text(encoding="utf-8"))
+        build_reference_for_open_markets(client, store, ["QQQ.US"], ["US"], us_open, logger=_NullLogger(), force=True)
+        third = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(first["static_info_by_symbol"]["QQQ.US"]["calls"], 1)
+        self.assertEqual(second["static_info_by_symbol"]["QQQ.US"]["calls"], 1)
+        self.assertEqual(third["static_info_by_symbol"]["QQQ.US"]["calls"], 2)
+        shutil.rmtree(store.base_dir)
+
+
+class _NullLogger:
+    def info(self, *args, **kwargs) -> None:
+        return None
+
+    def exception(self, *args, **kwargs) -> None:
+        return None
 
 
 if __name__ == "__main__":

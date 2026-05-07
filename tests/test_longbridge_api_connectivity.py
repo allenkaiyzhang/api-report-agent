@@ -33,17 +33,21 @@ class LongbridgeApiConnectivityTest(unittest.TestCase):
         ]
 
         client = MarketClient(provider="longbridge")
-        rows = client.fetch_quotes(symbols)
+        rows = client.fetch_realtime_quotes(symbols)
 
         self.assertEqual(len(rows), len(symbols))
         for row in rows:
             self.assertIn(row["symbol"], symbols)
             self.assertGreater(row["latest_price"], 0)
             self.assertGreaterEqual(row["previous_close"], 0)
-            self.assertIn("static_info", row)
-            self.assertIn("calc_indexes", row)
-            self.assertIn("daily_candlesticks", row)
+            self.assertNotIn("static_info", row)
+            self.assertNotIn("daily_candlesticks", row)
             self.assertEqual(row["market_data_provider"], "longbridge")
+
+        reference = client.fetch_reference_data(symbols)
+        self.assertIn("static_info_by_symbol", reference)
+        self.assertIn("calc_indexes_by_symbol", reference)
+        self.assertIn("daily_candlesticks_by_symbol", reference)
 
 
 if __name__ == "__main__":

@@ -221,6 +221,39 @@ class DataPipelineTest(unittest.TestCase):
         self.assertEqual(output_path, self.base_dir / "data" / "metrics" / "HK" / "2026-05-07" / "daily.json")
         self.assertFalse(output_path.exists())
 
+    def test_normalize_handles_lightweight_raw_without_static_info(self) -> None:
+        raw_dir = self.base_dir / "data" / "raw" / "HK"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        raw_path = raw_dir / "2026-05-07.jsonl"
+        raw_path.write_text(
+            json.dumps(
+                {
+                    "collected_at": "2026-05-07T10:00:00+08:00",
+                    "provider": "mock",
+                    "market": "HK",
+                    "symbol": "700.HK",
+                    "last_price": 500,
+                    "previous_close": 490,
+                    "volume": 1000,
+                    "timestamp": "2026-05-07T10:00:00+08:00",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        output_path = normalize_day("HK", "2026-05-07", base_dir=self.base_dir)
+        row = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+
+        self.assertEqual(row["symbol"], "0700.HK")
+        self.assertEqual(row["currency"], "HKD")
+
+    def test_normalize_remains_compatible_with_legacy_raw_static_info(self) -> None:
+        output_path = normalize_day("US", "2026-05-07", base_dir=self.base_dir)
+        rows = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual(rows[0]["currency"], "USD")
+
 
 if __name__ == "__main__":
     unittest.main()

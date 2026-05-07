@@ -15,6 +15,7 @@ from core.market_calendar import (
     MarketWindow,
     get_market_windows,
 )
+from core.reference_data_store import ReferenceDataStore
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -100,11 +101,14 @@ def normalize_record(
     raw_record: dict[str, Any],
     market: str,
     collected_at: str | None = None,
+    reference_static_info_by_symbol: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Normalize one raw quote record and attach quality flags."""
     normalized_market = normalize_market(raw_record.get("market") or market)
     symbol = normalize_symbol(raw_record.get("symbol"), normalized_market)
-    static_info = raw_record.get("static_info") if isinstance(raw_record.get("static_info"), dict) else {}
+    raw_static_info = raw_record.get("static_info")
+    reference_static_info = (reference_static_info_by_symbol or {}).get(symbol, {})
+    static_info = raw_static_info if isinstance(raw_static_info, dict) else reference_static_info
 
     event_time = normalize_timestamp(
         raw_record.get("event_time")
@@ -189,12 +193,21 @@ def normalize_day(market: str, trading_date: str, base_dir: Path = BASE_DIR) -> 
         logger.info("skip normalize because raw file missing: %s %s", market, trading_date)
         return output_path
     load_result = load_jsonl(raw_path)
+    reference = ReferenceDataStore(base_dir).load_reference(market, trading_date)
+    reference_static_info_by_symbol = reference.get("static_info_by_symbol", {})
+    if not isinstance(reference_static_info_by_symbol, dict):
+        reference_static_info_by_symbol = {}
 
     normalized_records: list[dict[str, Any]] = []
     seen_keys: set[tuple[str, str, str]] = set()
     for raw_entry in load_result.records:
         for raw_record, collected_at in expand_raw_entry(raw_entry):
-            normalized = normalize_record(raw_record, market=market, collected_at=collected_at)
+            normalized = normalize_record(
+                raw_record,
+                market=market,
+                collected_at=collected_at,
+                reference_static_info_by_symbol=reference_static_info_by_symbol,
+            )
             key = (normalized["market"], normalized["symbol"], normalized["event_time"])
             if all(key) and key in seen_keys:
                 normalized["flags"] = sorted(set(normalized["flags"] + ["duplicate_record"]))
@@ -952,4 +965,3 @@ def optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
