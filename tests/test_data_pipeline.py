@@ -13,7 +13,10 @@ from core.data_pipeline import (
     all_day,
     build_symbol_window_metrics,
     check_time_series_integrity,
+    daily_day,
+    metrics_day,
     get_market_windows,
+    normalize_day,
     normalize_record,
 )
 
@@ -199,6 +202,24 @@ class DataPipelineTest(unittest.TestCase):
         self.assertEqual(quality["raw_quality"]["json_parse_errors"], 1)
         self.assertEqual(quality["normalized_quality"]["normalized_lines"], 3)
         self.assertGreaterEqual(quality["window_quality"]["expected_windows"], 7)
+
+    def test_missing_raw_skips_normalize_without_traceback(self) -> None:
+        output_path = normalize_day("HK", "2026-05-07", base_dir=self.base_dir)
+
+        self.assertEqual(output_path, self.base_dir / "data" / "normalized" / "HK" / "2026-05-07.jsonl")
+        self.assertFalse(output_path.exists())
+
+    def test_missing_normalized_skips_metrics_without_traceback(self) -> None:
+        output_dir = metrics_day("HK", "2026-05-07", base_dir=self.base_dir)
+
+        self.assertEqual(output_dir, self.base_dir / "data" / "metrics" / "HK" / "2026-05-07")
+        self.assertFalse(output_dir.exists())
+
+    def test_missing_metrics_directory_skips_daily_without_traceback(self) -> None:
+        output_path = daily_day("HK", "2026-05-07", base_dir=self.base_dir)
+
+        self.assertEqual(output_path, self.base_dir / "data" / "metrics" / "HK" / "2026-05-07" / "daily.json")
+        self.assertFalse(output_path.exists())
 
 
 if __name__ == "__main__":

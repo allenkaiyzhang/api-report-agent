@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from core.market_calendar import get_trading_date
 from core.trading_hours import infer_symbol_market
 
 
@@ -32,11 +33,11 @@ class DailyJsonlMarketDataStore:
         """Append raw records into data/raw/{market}/YYYY-MM-DD.jsonl without mutation."""
         output_paths: dict[str, Path] = {}
         collected_at_text = collected_at.astimezone(self.file_timezone).isoformat(timespec="seconds")
-        file_date = collected_at.astimezone(self.file_timezone).strftime("%Y-%m-%d")
 
         for record in records:
             symbol = str(record.get("symbol", ""))
             market = infer_symbol_market(symbol)
+            file_date = get_trading_date(market, collected_at)
             output_path = self.output_dir / market / f"{file_date}.jsonl"
             output_path.parent.mkdir(parents=True, exist_ok=True)
             raw_line = {

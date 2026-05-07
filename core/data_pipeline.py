@@ -8,10 +8,14 @@ import os
 import statistics
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time
+from datetime import UTC, datetime, time
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
+
+from core.market_calendar import (
+    MarketWindow,
+    get_market_windows,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -25,32 +29,9 @@ INVALID_FLAGS = {
     "missing_price",
     "duplicate_record",
 }
-MARKET_TIMEZONES = {
-    "HK": ZoneInfo("Asia/Hong_Kong"),
-    "US": ZoneInfo("America/New_York"),
-}
 MARKET_CURRENCIES = {
     "HK": "HKD",
     "US": "USD",
-}
-WINDOW_CONFIG = {
-    "HK": [
-        ("09:30", "10:30"),
-        ("10:30", "11:30"),
-        ("11:30", "12:00"),
-        ("13:00", "14:00"),
-        ("14:00", "15:00"),
-        ("15:00", "16:00"),
-    ],
-    "US": [
-        ("09:30", "10:30"),
-        ("10:30", "11:30"),
-        ("11:30", "12:30"),
-        ("12:30", "13:30"),
-        ("13:30", "14:30"),
-        ("14:30", "15:30"),
-        ("15:30", "16:00"),
-    ],
 }
 
 logger = logging.getLogger("data_pipeline")
@@ -61,14 +42,6 @@ class JsonlLoadResult:
     records: list[dict[str, Any]]
     raw_lines: int
     json_parse_errors: list[dict[str, Any]]
-
-
-@dataclass(frozen=True)
-class MarketWindow:
-    window_id: str
-    start: datetime
-    end: datetime
-    expected_points: int
 
 
 def setup_logging() -> None:
@@ -213,6 +186,9 @@ def normalize_day(market: str, trading_date: str, base_dir: Path = BASE_DIR) -> 
     market = normalize_market(market)
     raw_path = raw_file_path(base_dir, market, trading_date)
     output_path = normalized_file_path(base_dir, market, trading_date)
+    if not raw_path.exists():
+        logger.info("skip normalize because raw file missing: %s %s", market, trading_date)
+        return output_path
     load_result = load_jsonl(raw_path)
 
     normalized_records: list[dict[str, Any]] = []
@@ -256,30 +232,6 @@ def expand_raw_entry(raw_entry: dict[str, Any]) -> list[tuple[dict[str, Any], st
             if isinstance(record, dict)
         ]
     return [(raw_entry, collected_at)]
-
-
-def get_market_windows(market: str, trading_date: str, interval_minutes: int = INTERVAL_MINUTES) -> list[MarketWindow]:
-    """Return configured trading windows for a market/date."""
-    market = normalize_market(market)
-    timezone = MARKET_TIMEZONES[market]
-    current_date = date.fromisoformat(trading_date)
-    windows: list[MarketWindow] = []
-    for start_text, end_text in WINDOW_CONFIG[market]:
-        start_time = parse_time(start_text)
-        end_time = parse_time(end_text)
-        start_dt = datetime.combine(current_date, start_time, tzinfo=timezone)
-        end_dt = datetime.combine(current_date, end_time, tzinfo=timezone)
-        minutes = (end_dt - start_dt).total_seconds() / 60
-        expected_points = int(minutes // interval_minutes)
-        windows.append(
-            MarketWindow(
-                window_id=f"{start_time:%H%M}_{end_time:%H%M}",
-                start=start_dt,
-                end=end_dt,
-                expected_points=expected_points,
-            )
-        )
-    return windows
 
 
 def build_window_metrics(
@@ -627,6 +579,9 @@ def metrics_day(market: str, trading_date: str, base_dir: Path = BASE_DIR) -> Pa
     """Generate per-window metrics from normalized JSONL."""
     market = normalize_market(market)
     normalized_path = normalized_file_path(base_dir, market, trading_date)
+    if not normalized_path.exists():
+        logger.info("skip metrics because normalized file missing: %s %s", market, trading_date)
+        return metrics_dir(base_dir, market, trading_date)
     load_result = load_jsonl(normalized_path)
     output_dir = metrics_dir(base_dir, market, trading_date)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -671,7 +626,8 @@ def daily_day(market: str, trading_date: str, base_dir: Path = BASE_DIR) -> Path
     market = normalize_market(market)
     output_dir = metrics_dir(base_dir, market, trading_date)
     if not output_dir.exists():
-        raise FileNotFoundError(f"Metrics directory does not exist: {output_dir}")
+        logger.info("skip daily because metrics directory missing: %s %s", market, trading_date)
+        return output_dir / "daily.json"
     window_metrics = []
     for path in sorted(output_dir.glob("window_*.json")):
         try:
@@ -688,11 +644,23 @@ def daily_day(market: str, trading_date: str, base_dir: Path = BASE_DIR) -> Path
 def quality_day(market: str, trading_date: str, base_dir: Path = BASE_DIR) -> Path:
     """Generate daily quality report."""
     market = normalize_market(market)
-    raw_load_result = load_jsonl(raw_file_path(base_dir, market, trading_date))
-    normalized_load_result = load_jsonl(normalized_file_path(base_dir, market, trading_date))
+    raw_path = raw_file_path(base_dir, market, trading_date)
+    normalized_path = normalized_file_path(base_dir, market, trading_date)
+    output_dir = metrics_dir(base_dir, market, trading_date)
+    output_path = quality_file_path(base_dir, market, trading_date)
+    if not raw_path.exists():
+        logger.info("skip quality because raw file missing: %s %s", market, trading_date)
+        return output_path
+    if not normalized_path.exists():
+        logger.info("skip quality because normalized file missing: %s %s", market, trading_date)
+        return output_path
+    if not output_dir.exists():
+        logger.info("skip quality because metrics directory missing: %s %s", market, trading_date)
+        return output_path
+    raw_load_result = load_jsonl(raw_path)
+    normalized_load_result = load_jsonl(normalized_path)
 
     window_metrics = []
-    output_dir = metrics_dir(base_dir, market, trading_date)
     for path in sorted(output_dir.glob("window_*.json")):
         try:
             window_metrics.append(json.loads(path.read_text(encoding="utf-8")))
@@ -706,7 +674,6 @@ def quality_day(market: str, trading_date: str, base_dir: Path = BASE_DIR) -> Pa
         normalized_records=normalized_load_result.records,
         window_metrics=window_metrics,
     )
-    output_path = quality_file_path(base_dir, market, trading_date)
     write_json_atomic(output_path, report)
     logger.info("Generated quality report %s %s: %s", market, trading_date, output_path)
     return output_path
@@ -714,6 +681,9 @@ def quality_day(market: str, trading_date: str, base_dir: Path = BASE_DIR) -> Pa
 
 def all_day(market: str, trading_date: str, base_dir: Path = BASE_DIR) -> None:
     """Run normalize, windows, metrics, daily, and quality for one market/date."""
+    if not raw_file_path(base_dir, market, trading_date).exists():
+        logger.info("skip normalize because raw file missing: %s %s", normalize_market(market), trading_date)
+        return
     normalize_day(market, trading_date, base_dir)
     windows_day(market, trading_date, base_dir)
     metrics_day(market, trading_date, base_dir)

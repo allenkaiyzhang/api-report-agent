@@ -9,8 +9,14 @@ from dotenv import load_dotenv
 
 from clients.market_client import MarketClient
 from core.loader import load_symbols
+from core.market_calendar import (
+    get_market_local_now,
+    get_trading_date,
+    should_build_daily,
+    should_collect_market,
+)
 from core.market_data_store import DailyJsonlMarketDataStore
-from core.trading_hours import filter_symbols_by_open_markets, open_markets
+from core.trading_hours import filter_symbols_by_open_markets
 from core.data_pipeline import (
     BASE_DIR,
     daily_day,
@@ -20,6 +26,7 @@ from core.data_pipeline import (
     normalize_day,
     normalized_file_path,
     quality_day,
+    raw_file_path,
     windows_day,
     write_json_atomic,
     build_window_metrics,
@@ -34,41 +41,65 @@ DAILY_BUILD_DELAY_MINUTES = 10
 
 
 def market_date(market: str, now: datetime) -> str:
-    timezone = {"HK": "Asia/Hong_Kong", "US": "America/New_York"}[market]
-    from zoneinfo import ZoneInfo
-
-    return now.astimezone(ZoneInfo(timezone)).date().isoformat()
+    return get_trading_date(market, now)
 
 
-def collect_job(agent: MarketDataCollectorAgent, symbols: list[str], state: RuntimeState, logger) -> None:
+def collect_job(
+    agent: MarketDataCollectorAgent,
+    symbols: list[str],
+    markets: list[str],
+    now: datetime,
+    state: RuntimeState,
+    logger,
+) -> None:
+    for market in markets:
+        collect_market(agent, symbols, market, now, state, logger)
+
+
+def collect_market(
+    agent: MarketDataCollectorAgent,
+    symbols: list[str],
+    market: str,
+    now: datetime,
+    state: RuntimeState,
+    logger,
+) -> None:
+    local_time = get_market_local_now(market, now).isoformat(timespec="seconds")
+    trading_date = market_date(market, now)
+    if not should_collect_market(market, now):
+        logger.info("skip collect because market closed: %s local_time=%s", market, local_time)
+        return
+
+    logger.info("collect market: %s local_time=%s", market, local_time)
+    target_symbols = filter_symbols_by_open_markets(symbols, [market])
+    if not target_symbols:
+        logger.info("skip collect because no symbols configured: %s local_time=%s", market, local_time)
+        return
+
     for attempt in range(1, COLLECT_RETRY_ATTEMPTS + 1):
         try:
-            output_paths = agent.run_once(symbols)
+            output_paths = agent.run_once(target_symbols, now=now)
             if output_paths:
                 for output_path in output_paths:
-                    market = output_path.parent.name
-                    trading_date = output_path.stem
-                    state.record_collect_success(market, trading_date, str(output_path))
+                    output_market = output_path.parent.name
+                    output_date = output_path.stem
+                    state.record_collect_success(output_market, output_date, str(output_path))
             return
         except Exception as exc:
-            logger.exception("collect attempt %s failed", attempt)
-            active_markets = open_markets(datetime.now(UTC))
-            if active_markets:
-                for market in active_markets:
-                    state.record_collect_failure(market, market_date(market, datetime.now(UTC)), exc)
-            else:
-                state.record_error("collect", exc)
+            logger.exception("collect attempt %s failed for %s", attempt, market)
+            state.record_collect_failure(market, trading_date, exc)
             time.sleep(COLLECT_RETRY_SECONDS)
 
 
 def normalize_existing_raw(markets: list[str], now: datetime, state: RuntimeState, logger) -> None:
     for market in markets:
         trading_date = market_date(market, now)
+        if not raw_file_path(BASE_DIR, market, trading_date).exists():
+            logger.info("skip normalize because raw file missing: %s %s", market, trading_date)
+            continue
         try:
             normalize_day(market, trading_date)
             state.mark_success("last_normalize_time")
-        except FileNotFoundError:
-            logger.info("raw file not found for normalize: %s %s", market, trading_date)
         except Exception as exc:
             logger.exception("normalize failed for %s %s", market, trading_date)
             state.record_error("normalize", exc)
@@ -77,13 +108,13 @@ def normalize_existing_raw(markets: list[str], now: datetime, state: RuntimeStat
 def build_finished_windows(markets: list[str], now: datetime, state: RuntimeState, logger, force: bool = False) -> None:
     for market in markets:
         trading_date = market_date(market, now)
-        try:
-            normalized = load_jsonl(normalized_file_path(BASE_DIR, market, trading_date))
-        except FileNotFoundError:
-            logger.info("normalized file not found for metrics: %s %s", market, trading_date)
+        normalized_path = normalized_file_path(BASE_DIR, market, trading_date)
+        if not normalized_path.exists():
+            logger.info("skip metrics because normalized file missing: %s %s", market, trading_date)
             continue
 
         try:
+            normalized = load_jsonl(normalized_path)
             windows_day(market, trading_date)
             for window in get_market_windows(market, trading_date):
                 if now.astimezone(window.end.tzinfo) < window.end:
@@ -108,9 +139,17 @@ def build_daily_after_close(markets: list[str], now: datetime, state: RuntimeSta
             continue
         last_end = windows[-1].end + timedelta(minutes=DAILY_BUILD_DELAY_MINUTES)
         if now.astimezone(last_end.tzinfo) < last_end:
+            logger.info("skip daily because not after close: %s %s", market, trading_date)
             continue
-        daily_path = metrics_dir(BASE_DIR, market, trading_date) / "daily.json"
+        output_dir = metrics_dir(BASE_DIR, market, trading_date)
+        if not output_dir.exists():
+            logger.info("skip daily because metrics directory missing: %s %s", market, trading_date)
+            continue
+        daily_path = output_dir / "daily.json"
         quality_path = BASE_DIR / "data" / "quality" / market / f"{trading_date}.json"
+        if not should_build_daily(market, now, BASE_DIR, force_rebuild=force):
+            logger.info("skip daily because no build needed or input missing: %s %s", market, trading_date)
+            continue
         try:
             if not (daily_path.exists() and quality_path.exists() and not force):
                 daily_day(market, trading_date)
@@ -157,10 +196,8 @@ def main() -> None:
         now = datetime.now(UTC)
         try:
             if (now - last_collect).total_seconds() >= interval_seconds:
-                collect_job(agent, symbols, state, logger)
-                active_markets = open_markets(now)
-                if active_markets:
-                    normalize_existing_raw(active_markets, now, state, logger)
+                collect_job(agent, symbols, markets, now, state, logger)
+                normalize_existing_raw(markets, now, state, logger)
                 last_collect = now
 
             build_finished_windows(markets, now, state, logger, force=force_rebuild)
