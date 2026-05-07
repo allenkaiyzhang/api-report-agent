@@ -254,6 +254,39 @@ class DataPipelineTest(unittest.TestCase):
 
         self.assertEqual(rows[0]["currency"], "USD")
 
+    def test_us_longbridge_naive_timestamp_matches_new_york_window(self) -> None:
+        raw_dir = self.base_dir / "data" / "raw" / "US"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        raw_path = raw_dir / "2026-05-07.jsonl"
+        raw_path.write_text(
+            json.dumps(
+                {
+                    "collected_at": "2026-05-07T23:21:00+08:00",
+                    "provider": "longbridge",
+                    "market": "US",
+                    "symbol": "QQQ.US",
+                    "last_price": 450,
+                    "previous_close": 445,
+                    "volume": 1000,
+                    "turnover": 450000,
+                    "timestamp": "2026-05-07 23:20:59",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        normalize_day("US", "2026-05-07", base_dir=self.base_dir)
+        output_dir = metrics_day("US", "2026-05-07", base_dir=self.base_dir)
+        normalized_path = self.base_dir / "data" / "normalized" / "US" / "2026-05-07.jsonl"
+        normalized = json.loads(normalized_path.read_text(encoding="utf-8").splitlines()[0])
+        metric = json.loads((output_dir / "window_1030_1130.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(normalized["event_time"], "2026-05-07T23:20:59+08:00")
+        self.assertEqual(normalized["symbol"], "QQQ.US")
+        self.assertTrue(metric["symbols"])
+        self.assertEqual(metric["symbols"][0]["symbol"], "QQQ.US")
+
 
 if __name__ == "__main__":
     unittest.main()

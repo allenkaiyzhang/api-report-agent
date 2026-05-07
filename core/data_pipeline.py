@@ -7,9 +7,10 @@ import os
 import statistics
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, tzinfo
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from core.market_calendar import (
     MarketWindow,
@@ -32,6 +33,11 @@ INVALID_FLAGS = {
 MARKET_CURRENCIES = {
     "HK": "HKD",
     "US": "USD",
+}
+LONG_BRIDGE_NAIVE_TIMESTAMP_TIMEZONE = ZoneInfo("Asia/Shanghai")
+MARKET_NAIVE_TIMESTAMP_TIMEZONES = {
+    "HK": ZoneInfo("Asia/Hong_Kong"),
+    "US": LONG_BRIDGE_NAIVE_TIMESTAMP_TIMEZONE,
 }
 
 logger = logging.getLogger("data_pipeline")
@@ -110,11 +116,7 @@ def normalize_record(
     reference_static_info = (reference_static_info_by_symbol or {}).get(symbol, {})
     static_info = raw_static_info if isinstance(raw_static_info, dict) else reference_static_info
 
-    event_time = normalize_timestamp(
-        raw_record.get("event_time")
-        or raw_record.get("timestamp")
-        or raw_record.get("quote_time")
-    )
+    event_time = normalize_event_timestamp(raw_record, normalized_market)
     collected = normalize_timestamp(
         collected_at
         or raw_record.get("collected_at")
@@ -259,6 +261,8 @@ def build_window_metrics(
         for record in records
         if record_belongs_to_window(record, window)
     ]
+    if records and not records_in_window:
+        log_empty_window_match(market, trading_date, window, records)
     by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for record in records_in_window:
         symbol = record.get("symbol")
@@ -865,6 +869,42 @@ def record_belongs_to_window(record: dict[str, Any], window: MarketWindow) -> bo
     return window.start <= local_time < window.end
 
 
+def log_empty_window_match(
+    market: str,
+    trading_date: str,
+    window: MarketWindow,
+    records: list[dict[str, Any]],
+) -> None:
+    event_times = [
+        event_time
+        for event_time in (parse_datetime(record.get("event_time")) for record in records)
+        if event_time is not None
+    ]
+    if not event_times:
+        logger.info(
+            "window matched zero records with no parseable event_time: %s %s %s start=%s end=%s",
+            market,
+            trading_date,
+            window.window_id,
+            window.start.isoformat(timespec="seconds"),
+            window.end.isoformat(timespec="seconds"),
+        )
+        return
+
+    local_event_times = [event_time.astimezone(window.start.tzinfo) for event_time in event_times]
+    logger.info(
+        "window matched zero records: %s %s %s start=%s end=%s event_time_min=%s event_time_max=%s records=%s",
+        market,
+        trading_date,
+        window.window_id,
+        window.start.isoformat(timespec="seconds"),
+        window.end.isoformat(timespec="seconds"),
+        min(local_event_times).isoformat(timespec="seconds"),
+        max(local_event_times).isoformat(timespec="seconds"),
+        len(records),
+    )
+
+
 def max_drawdown_pct(prices: list[float]) -> float:
     peak = prices[0]
     max_drawdown = 0.0
@@ -926,9 +966,30 @@ def normalize_timestamp(value: Any) -> str | None:
     return parsed.isoformat(timespec="seconds")
 
 
-def parse_datetime(value: Any) -> datetime | None:
+def normalize_event_timestamp(raw_record: dict[str, Any], market: str) -> str | None:
+    event_time_value = raw_record.get("event_time")
+    if event_time_value not in (None, ""):
+        parsed = parse_datetime(event_time_value, default_timezone=MARKET_NAIVE_TIMESTAMP_TIMEZONES[market])
+        if parsed is not None and datetime_value_has_timezone(event_time_value):
+            return parsed.isoformat(timespec="seconds")
+        if parsed is not None and raw_record.get("timestamp") in (None, ""):
+            return parsed.isoformat(timespec="seconds")
+
+    timestamp_value = raw_record.get("timestamp") or raw_record.get("quote_time")
+    parsed = parse_datetime(timestamp_value, default_timezone=MARKET_NAIVE_TIMESTAMP_TIMEZONES[market])
+    if parsed is not None:
+        return parsed.isoformat(timespec="seconds")
+
+    if event_time_value not in (None, ""):
+        parsed = parse_datetime(event_time_value, default_timezone=MARKET_NAIVE_TIMESTAMP_TIMEZONES[market])
+        if parsed is not None:
+            return parsed.isoformat(timespec="seconds")
+    return None
+
+
+def parse_datetime(value: Any, default_timezone: tzinfo = UTC) -> datetime | None:
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=UTC)
+        return value if value.tzinfo else value.replace(tzinfo=default_timezone)
     if value in (None, ""):
         return None
     text = str(value).strip()
@@ -938,7 +999,24 @@ def parse_datetime(value: Any) -> datetime | None:
         parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=default_timezone)
+
+
+def datetime_value_has_timezone(value: Any) -> bool:
+    if isinstance(value, datetime):
+        return value.tzinfo is not None
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if text.endswith("Z"):
+        return True
+    if "T" in text:
+        time_part = text.rsplit("T", 1)[1]
+    elif " " in text:
+        time_part = text.rsplit(" ", 1)[1]
+    else:
+        return False
+    return "+" in time_part or "-" in time_part
 
 
 def parse_time(value: str) -> time:
