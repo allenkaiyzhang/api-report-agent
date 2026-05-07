@@ -1,0 +1,5 @@
+symbol,name,type,watch_reason
+QQQ,Nasdaq 100 ETF,ETF,科技股风险偏好
+SGOV,Short Treasury ETF,ETF,现金替代和避险
+HSBC.US,HSBC ADR,Stock,银行股和股息策略
+VIX,VIX Index,Index,市场恐慌指数
