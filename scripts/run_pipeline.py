@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.market_client import MarketClient
 from core.loader import load_symbols
