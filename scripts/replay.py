@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 from collections import Counter
 from pathlib import Path
@@ -14,7 +13,6 @@ from core.data_pipeline import (
     quality_file_path,
     raw_file_path,
 )
-from core.runtime_support import setup_logger
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -90,26 +88,3 @@ def replay_summary(market: str, trading_date: str, window: str | None = None) ->
         "top_drawdown_symbols": top_drawdown,
     }
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Replay/debug one market date")
-    parser.add_argument("--market", required=True, choices=["HK", "US"])
-    parser.add_argument("--date", required=True)
-    parser.add_argument("--window")
-    return parser.parse_args()
-
-
-def main() -> None:
-    logger = setup_logger("replay", "replay.log")
-    args = parse_args()
-    try:
-        summary = replay_summary(args.market, args.date, args.window)
-    except FileNotFoundError as exc:
-        logger.error("%s", exc)
-        raise SystemExit(1) from exc
-    logger.info("replay summary generated market=%s date=%s window=%s", args.market, args.date, args.window)
-    print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
-
-
-if __name__ == "__main__":
-    main()

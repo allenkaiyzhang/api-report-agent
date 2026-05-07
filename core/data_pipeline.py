@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import math
@@ -954,35 +953,3 @@ def optional_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Market data processing pipeline")
-    parser.add_argument("command", choices=["normalize", "windows", "metrics", "daily", "quality", "all"])
-    parser.add_argument("--market", required=True, choices=["HK", "US"])
-    parser.add_argument("--date", required=True, help="Trading date, e.g. 2026-05-07")
-    return parser.parse_args()
-
-
-def main() -> None:
-    setup_logging()
-    args = parse_args()
-    if args.command == "normalize":
-        normalize_day(args.market, args.date)
-    elif args.command == "windows":
-        windows_day(args.market, args.date)
-    elif args.command == "metrics":
-        metrics_day(args.market, args.date)
-    elif args.command == "daily":
-        daily_day(args.market, args.date)
-    elif args.command == "quality":
-        quality_day(args.market, args.date)
-    elif args.command == "all":
-        all_day(args.market, args.date)
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except FileNotFoundError as exc:
-        logger.error("%s", exc)
-        raise SystemExit(1) from exc

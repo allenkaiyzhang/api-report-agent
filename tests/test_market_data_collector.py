@@ -14,10 +14,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from clients.market_client import MarketClient
 from core.market_data_store import DailyJsonlMarketDataStore
 from core.trading_hours import filter_symbols_by_open_markets, open_markets
-from scripts.market_data_agent import MarketDataCollectorAgent
+from scripts.market_data_collector import MarketDataCollector
 
 
-class MarketDataAgentTest(unittest.TestCase):
+class MarketDataCollectorTest(unittest.TestCase):
     def setUp(self) -> None:
         self.output_dir = PROJECT_ROOT / "tests" / "collector_output_test"
         if self.output_dir.exists():
@@ -44,14 +44,14 @@ class MarketDataAgentTest(unittest.TestCase):
 
     def test_run_once_writes_daily_jsonl_snapshot(self) -> None:
         store = DailyJsonlMarketDataStore(self.output_dir)
-        agent = MarketDataCollectorAgent(
+        collector = MarketDataCollector(
             market_client=MarketClient(provider="mock"),
             store=store,
             interval_seconds=120,
         )
         us_open = datetime(2026, 5, 7, 10, 0, tzinfo=ZoneInfo("America/New_York"))
 
-        output_paths = agent.run_once(["QQQ", "700.HK"], now=us_open)
+        output_paths = collector.run_once(["QQQ", "700.HK"], now=us_open)
 
         self.assertEqual(len(output_paths), 1)
         output_path = output_paths[0]

@@ -32,7 +32,7 @@ from core.data_pipeline import (
     build_window_metrics,
 )
 from core.runtime_support import RuntimeState, setup_logger
-from scripts.market_data_agent import MarketDataCollectorAgent
+from scripts.market_data_collector import MarketDataCollector
 
 
 COLLECT_RETRY_ATTEMPTS = 3
@@ -45,7 +45,7 @@ def market_date(market: str, now: datetime) -> str:
 
 
 def collect_job(
-    agent: MarketDataCollectorAgent,
+    collector: MarketDataCollector,
     symbols: list[str],
     markets: list[str],
     now: datetime,
@@ -53,11 +53,11 @@ def collect_job(
     logger,
 ) -> None:
     for market in markets:
-        collect_market(agent, symbols, market, now, state, logger)
+        collect_market(collector, symbols, market, now, state, logger)
 
 
 def collect_market(
-    agent: MarketDataCollectorAgent,
+    collector: MarketDataCollector,
     symbols: list[str],
     market: str,
     now: datetime,
@@ -78,7 +78,7 @@ def collect_market(
 
     for attempt in range(1, COLLECT_RETRY_ATTEMPTS + 1):
         try:
-            output_paths = agent.run_once(target_symbols, now=now)
+            output_paths = collector.run_once(target_symbols, now=now)
             if output_paths:
                 for output_path in output_paths:
                     output_market = output_path.parent.name
@@ -182,7 +182,7 @@ def main() -> None:
     output_dir = Path(os.getenv("DATA_COLLECTION_OUTPUT_DIR", "data/raw"))
     if not output_dir.is_absolute():
         output_dir = BASE_DIR / output_dir
-    agent = MarketDataCollectorAgent(
+    collector = MarketDataCollector(
         market_client=MarketClient(provider=provider),
         store=DailyJsonlMarketDataStore(output_dir=output_dir),
         interval_seconds=interval_seconds,
@@ -196,7 +196,7 @@ def main() -> None:
         now = datetime.now(UTC)
         try:
             if (now - last_collect).total_seconds() >= interval_seconds:
-                collect_job(agent, symbols, markets, now, state, logger)
+                collect_job(collector, symbols, markets, now, state, logger)
                 normalize_existing_raw(markets, now, state, logger)
                 last_collect = now
 

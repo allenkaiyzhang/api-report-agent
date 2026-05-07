@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
 from core.data_pipeline import BASE_DIR, load_jsonl, normalized_file_path, parse_datetime
-from core.runtime_support import setup_logger
 
 
 def build_debug_chart(market: str, trading_date: str, symbol: str) -> Path:
@@ -54,27 +52,3 @@ def build_debug_chart(market: str, trading_date: str, symbol: str) -> Path:
     fig.savefig(output_path)
     plt.close(fig)
     return output_path
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate debug chart from normalized data")
-    parser.add_argument("--market", required=True, choices=["HK", "US"])
-    parser.add_argument("--date", required=True)
-    parser.add_argument("--symbol", required=True)
-    return parser.parse_args()
-
-
-def main() -> None:
-    logger = setup_logger("debug_chart", "replay.log")
-    args = parse_args()
-    try:
-        path = build_debug_chart(args.market, args.date, args.symbol)
-    except FileNotFoundError as exc:
-        logger.error("%s", exc)
-        raise SystemExit(1) from exc
-    logger.info("debug chart generated: %s", path)
-    print(path)
-
-
-if __name__ == "__main__":
-    main()

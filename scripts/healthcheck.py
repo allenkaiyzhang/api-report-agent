@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
 
@@ -34,11 +33,3 @@ def healthcheck() -> dict:
         "current_raw_file_size": latest_file_size(BASE_DIR / "data" / "raw"),
         "current_normalized_file_size": latest_file_size(BASE_DIR / "data" / "normalized"),
     }
-
-
-def main() -> None:
-    print(json.dumps(healthcheck(), ensure_ascii=False, indent=2, default=str))
-
-
-if __name__ == "__main__":
-    main()
