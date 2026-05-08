@@ -37,6 +37,7 @@ config/logs/
 config/codex.toml
 config/cache/
 config/custom-covers/
+config/symbol.json
 
 # OS/editor
 .DS_Store
