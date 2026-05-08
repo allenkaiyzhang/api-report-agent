@@ -38,6 +38,40 @@ LONGBRIDGE_APP_SECRET=your_app_secret
 LONGBRIDGE_ACCESS_TOKEN=your_access_token
 ```
 
+Email reports:
+
+```env
+EMAIL_ENABLED=false
+EMAIL_INTRADAY_ENABLED=true
+EMAIL_INTRADAY_INTERVAL_HOURS=2
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_USE_TLS=true
+EMAIL_FROM=
+EMAIL_TO=
+EMAIL_SUBJECT_PREFIX=[api-report-agent]
+```
+
+Intraday email reports are sent during market hours every two hours by default, using only data collected in that two-hour window. Daily email reports are still sent after market close once daily metrics and quality files exist.
+
+Optional AI analysis can be included in email reports. AI is only used for report summarization and never controls collection, scheduling, metrics, or quality logic.
+
+```env
+AI_ANALYSIS_ENABLED=false
+AI_PROVIDER=mock
+AI_FALLBACK_PROVIDER=gemini
+AI_TIMEOUT_SECONDS=30
+DEEPSEEK_API_KEY=
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-flash
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
+```
+
+Use `AI_PROVIDER=mock` to include a deterministic default analysis without any API key. Use `AI_PROVIDER=deepseek` when a DeepSeek key is configured.
+
 Edit watched symbols in `config/symbols.json`:
 
 ```json

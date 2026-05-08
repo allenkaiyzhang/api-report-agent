@@ -74,6 +74,8 @@ class RuntimeState:
                 "last_daily_build": {},
                 "last_email_report": {},
                 "last_email_report_failure": {},
+                "last_intraday_email_report": {},
+                "last_intraday_email_report_failure": {},
                 "collect_stats": {},
                 "last_successful_run": None,
                 "error_count": 0,
@@ -122,6 +124,24 @@ class RuntimeState:
     def mark_email_report_failed(self, market: str, trading_date: str, error: str) -> None:
         key = f"{market}:{trading_date}"
         self.data.setdefault("last_email_report_failure", {})[key] = {
+            "time": utc_now_text(),
+            "error": error,
+        }
+        self.save()
+
+    def intraday_email_report_sent(self, key: str) -> bool:
+        return key in self.data.setdefault("last_intraday_email_report", {})
+
+    def mark_intraday_email_report_sent(self, key: str) -> None:
+        self.data.setdefault("last_intraday_email_report", {})[key] = utc_now_text()
+        self.data.setdefault("last_intraday_email_report_failure", {}).pop(key, None)
+        self.mark_success("last_intraday_email_report_time")
+
+    def intraday_email_report_failed(self, key: str) -> bool:
+        return key in self.data.setdefault("last_intraday_email_report_failure", {})
+
+    def mark_intraday_email_report_failed(self, key: str, error: str) -> None:
+        self.data.setdefault("last_intraday_email_report_failure", {})[key] = {
             "time": utc_now_text(),
             "error": error,
         }

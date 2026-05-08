@@ -13,7 +13,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.market_client import MarketClient
-from core.email_reporter import EmailConfig, send_daily_report
+from core.ai_analyzer import AIAnalysisConfig
+from core.email_reporter import EmailConfig, send_daily_report, send_intraday_report
 from core.loader import load_symbols
 from core.market_calendar import (
     get_market_local_now,
@@ -45,6 +46,7 @@ from scripts.market_data_collector import MarketDataCollector
 COLLECT_RETRY_ATTEMPTS = 3
 COLLECT_RETRY_SECONDS = 5
 DAILY_BUILD_DELAY_MINUTES = 10
+DEFAULT_INTRADAY_EMAIL_INTERVAL_HOURS = 2
 
 
 def market_date(market: str, now: datetime) -> str:
@@ -186,6 +188,7 @@ def build_daily_after_close(
     logger,
     force: bool = False,
     email_config: EmailConfig | None = None,
+    ai_config: AIAnalysisConfig | None = None,
 ) -> None:
     for market in markets:
         trading_date = market_date(market, now)
@@ -211,7 +214,7 @@ def build_daily_after_close(
                 quality_day(market, trading_date)
                 state.mark_daily_done(market, trading_date)
                 logger.info("built daily and quality: %s %s", daily_path, quality_path)
-            send_daily_report_after_close(email_config, market, trading_date, daily_path, quality_path, state, logger)
+            send_daily_report_after_close(email_config, ai_config, market, trading_date, daily_path, quality_path, state, logger)
         except FileNotFoundError as exc:
             logger.info("daily skipped because input missing: %s", exc)
         except Exception as exc:
@@ -221,6 +224,7 @@ def build_daily_after_close(
 
 def send_daily_report_after_close(
     email_config: EmailConfig | None,
+    ai_config: AIAnalysisConfig | None,
     market: str,
     trading_date: str,
     daily_path: Path,
@@ -244,12 +248,85 @@ def send_daily_report_after_close(
         return
 
     try:
-        send_daily_report(email_config, BASE_DIR, market, trading_date)
+        send_daily_report(email_config, BASE_DIR, market, trading_date, ai_config=ai_config)
         state.mark_email_report_sent(market, trading_date)
         logger.info("sent daily email report: %s %s", market, trading_date)
     except Exception as exc:
         logger.warning("email report failed for %s %s: %s", market, trading_date, exc)
         state.mark_email_report_failed(market, trading_date, str(exc))
+
+
+def send_intraday_reports(
+    markets: list[str],
+    now: datetime,
+    state: RuntimeState,
+    logger,
+    email_config: EmailConfig | None,
+    ai_config: AIAnalysisConfig | None,
+    interval_hours: int = DEFAULT_INTRADAY_EMAIL_INTERVAL_HOURS,
+) -> None:
+    if email_config is None or not email_config.enabled:
+        return
+    if not email_config.is_ready():
+        logger.info("skip intraday email because config incomplete")
+        return
+
+    for market in markets:
+        window = intraday_email_window(market, now, interval_hours)
+        if window is None:
+            continue
+        trading_date, period_start, period_end = window
+        key = intraday_email_key(market, trading_date, period_start, period_end)
+        if state.intraday_email_report_sent(key):
+            continue
+        if state.intraday_email_report_failed(key):
+            logger.info("skip intraday email because previous send failed: %s", key)
+            continue
+        if not (raw_file_path(BASE_DIR, market, trading_date).exists() and normalized_file_path(BASE_DIR, market, trading_date).exists()):
+            logger.info("skip intraday email because raw or normalized missing: %s", key)
+            continue
+
+        try:
+            send_intraday_report(
+                email_config,
+                BASE_DIR,
+                market,
+                trading_date,
+                period_start,
+                period_end,
+                ai_config=ai_config,
+            )
+            state.mark_intraday_email_report_sent(key)
+            logger.info("sent intraday email report: %s", key)
+        except Exception as exc:
+            logger.warning("intraday email report failed for %s: %s", key, exc)
+            state.mark_intraday_email_report_failed(key, str(exc))
+
+
+def intraday_email_window(
+    market: str,
+    now: datetime,
+    interval_hours: int = DEFAULT_INTRADAY_EMAIL_INTERVAL_HOURS,
+) -> tuple[str, datetime, datetime] | None:
+    if interval_hours <= 0 or not should_collect_market(market, now):
+        return None
+    trading_date = market_date(market, now)
+    windows = get_market_windows(market, trading_date)
+    if not windows:
+        return None
+    local_now = get_market_local_now(market, now)
+    first_start = windows[0].start
+    interval = timedelta(hours=interval_hours)
+    if local_now < first_start + interval:
+        return None
+    elapsed_intervals = int((local_now - first_start).total_seconds() // interval.total_seconds())
+    period_end = first_start + elapsed_intervals * interval
+    period_start = period_end - interval
+    return trading_date, period_start, period_end
+
+
+def intraday_email_key(market: str, trading_date: str, period_start: datetime, period_end: datetime) -> str:
+    return f"{market}:{trading_date}:{period_start:%H%M}_{period_end:%H%M}"
 
 
 def main() -> None:
@@ -270,6 +347,9 @@ def main() -> None:
     reference_force_rebuild = os.getenv("REFERENCE_FORCE_REBUILD", "false").lower() == "true"
     reference_build_on_market_open = os.getenv("REFERENCE_BUILD_ON_MARKET_OPEN", "true").lower() == "true"
     email_config = EmailConfig.from_env(os.environ)
+    ai_config = AIAnalysisConfig.from_env(os.environ)
+    intraday_email_enabled = os.getenv("EMAIL_INTRADAY_ENABLED", "true").lower() == "true"
+    intraday_email_interval_hours = int(os.getenv("EMAIL_INTRADAY_INTERVAL_HOURS", "2") or "2")
     loop_sleep = int(os.getenv("PIPELINE_LOOP_SLEEP_SECONDS", "10"))
     output_dir = Path(os.getenv("DATA_COLLECTION_OUTPUT_DIR", "data/raw"))
     if not output_dir.is_absolute():
@@ -302,10 +382,20 @@ def main() -> None:
                 )
                 collect_job(collector, symbols, markets, now, state, logger)
                 normalize_existing_raw(markets, now, state, logger)
+                if intraday_email_enabled:
+                    send_intraday_reports(
+                        markets=markets,
+                        now=now,
+                        state=state,
+                        logger=logger,
+                        email_config=email_config,
+                        ai_config=ai_config,
+                        interval_hours=intraday_email_interval_hours,
+                    )
                 last_collect = now
 
             build_finished_windows(markets, now, state, logger, force=force_rebuild)
-            build_daily_after_close(markets, now, state, logger, force=force_rebuild, email_config=email_config)
+            build_daily_after_close(markets, now, state, logger, force=force_rebuild, email_config=email_config, ai_config=ai_config)
         except Exception as exc:
             logger.exception("pipeline loop failed")
             state.record_error("pipeline_loop", exc)

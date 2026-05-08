@@ -10,7 +10,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.data_pipeline import all_day
-from core.email_reporter import EmailConfig, build_daily_report_payload, compose_daily_report_email
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from core.email_reporter import (
+    EmailConfig,
+    build_daily_report_payload,
+    build_intraday_report_payload,
+    compose_daily_report_email,
+    compose_intraday_report_email,
+)
 from core.runtime_support import RuntimeState
 
 
@@ -69,6 +78,32 @@ class EmailReporterTest(unittest.TestCase):
         self.assertIn("normalized lines: 2", body)
         self.assertIn("daily symbols:", body)
 
+    def test_compose_intraday_report_email_contains_two_hour_data(self) -> None:
+        config = EmailConfig(
+            enabled=True,
+            smtp_host="smtp.example.com",
+            smtp_port=587,
+            smtp_username="user",
+            smtp_password="password",
+            smtp_use_tls=True,
+            sender="from@example.com",
+            recipients=("to@example.com",),
+        )
+        payload = build_intraday_report_payload(
+            self.base_dir,
+            "US",
+            "2026-05-07",
+            datetime(2026, 5, 7, 9, 30, tzinfo=ZoneInfo("America/New_York")),
+            datetime(2026, 5, 7, 11, 30, tzinfo=ZoneInfo("America/New_York")),
+        )
+        message = compose_intraday_report_email(config, payload, ai_analysis="AI says ok")
+        body = message.get_content()
+
+        self.assertIn("US intraday data report", message["Subject"])
+        self.assertEqual(payload["raw_lines"], 2)
+        self.assertEqual(payload["normalized_lines"], 2)
+        self.assertIn("AI says ok", body)
+
     def test_runtime_state_tracks_email_report_sent(self) -> None:
         state_path = self.base_dir / "runtime" / "pipeline_status.json"
         state = RuntimeState(path=state_path)
@@ -86,6 +121,15 @@ class EmailReporterTest(unittest.TestCase):
 
         self.assertTrue(state.email_report_failed("US", "2026-05-07"))
         self.assertEqual(state.data.get("error_count", 0), 0)
+
+    def test_runtime_state_tracks_intraday_email_key(self) -> None:
+        state_path = self.base_dir / "runtime" / "pipeline_status.json"
+        state = RuntimeState(path=state_path)
+        key = "US:2026-05-07:0930_1130"
+
+        self.assertFalse(state.intraday_email_report_sent(key))
+        state.mark_intraday_email_report_sent(key)
+        self.assertTrue(state.intraday_email_report_sent(key))
 
 
 if __name__ == "__main__":

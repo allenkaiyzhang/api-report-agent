@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import smtplib
 from dataclasses import dataclass
+from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
-from core.data_pipeline import load_jsonl, metrics_dir, normalized_file_path, quality_file_path, raw_file_path
+from core.ai_analyzer import AIAnalysisConfig, analyze_market_report
+from core.data_pipeline import load_jsonl, metrics_dir, normalized_file_path, parse_datetime, quality_file_path, raw_file_path
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,7 @@ def build_daily_report_payload(base_dir: Path, market: str, trading_date: str) -
     quality = load_json(quality_file_path(base_dir, market, trading_date))
 
     return {
+        "report_type": "daily",
         "market": market,
         "trading_date": trading_date,
         "raw_lines": raw_result.raw_lines,
@@ -66,7 +69,40 @@ def build_daily_report_payload(base_dir: Path, market: str, trading_date: str) -
     }
 
 
-def compose_daily_report_email(config: EmailConfig, payload: dict[str, Any]) -> EmailMessage:
+def build_intraday_report_payload(
+    base_dir: Path,
+    market: str,
+    trading_date: str,
+    period_start: datetime,
+    period_end: datetime,
+) -> dict[str, Any]:
+    raw_result = load_jsonl(raw_file_path(base_dir, market, trading_date))
+    normalized_result = load_jsonl(normalized_file_path(base_dir, market, trading_date))
+    raw_records = [
+        record
+        for record in raw_result.records
+        if datetime_in_period(record.get("collected_at"), period_start, period_end)
+    ]
+    normalized_records = [
+        record
+        for record in normalized_result.records
+        if datetime_in_period(record.get("collected_at"), period_start, period_end)
+    ]
+    return {
+        "report_type": "intraday",
+        "market": market,
+        "trading_date": trading_date,
+        "period_start": period_start.isoformat(timespec="seconds"),
+        "period_end": period_end.isoformat(timespec="seconds"),
+        "raw_lines": len(raw_records),
+        "normalized_lines": len(normalized_records),
+        "raw_json_parse_errors": len(raw_result.json_parse_errors),
+        "symbol_count": len({record.get("symbol") for record in normalized_records if record.get("symbol")}),
+        "symbol_summary": build_symbol_summary(normalized_records),
+    }
+
+
+def compose_daily_report_email(config: EmailConfig, payload: dict[str, Any], ai_analysis: str = "") -> EmailMessage:
     market = payload["market"]
     trading_date = payload["trading_date"]
     subject = f"{config.subject_prefix} {market} daily data report {trading_date}"
@@ -94,6 +130,9 @@ def compose_daily_report_email(config: EmailConfig, payload: dict[str, Any]) -> 
         f"- duplicate records: {normalized_quality.get('duplicate_records', 0)}",
         f"- missing windows: {', '.join(window_quality.get('missing_windows', [])) or 'none'}",
         "",
+        "AI analysis:",
+        ai_analysis or "not enabled",
+        "",
         "Top movers:",
     ]
 
@@ -107,6 +146,40 @@ def compose_daily_report_email(config: EmailConfig, payload: dict[str, Any]) -> 
         items = market_summary.get(key, [])
         rendered = ", ".join(_format_summary_item(item) for item in items[:5]) or "none"
         lines.append(f"- {label}: {rendered}")
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = config.sender
+    message["To"] = ", ".join(config.recipients)
+    message.set_content("\n".join(lines))
+    return message
+
+
+def compose_intraday_report_email(config: EmailConfig, payload: dict[str, Any], ai_analysis: str = "") -> EmailMessage:
+    market = payload["market"]
+    trading_date = payload["trading_date"]
+    subject = f"{config.subject_prefix} {market} intraday data report {trading_date} {payload['period_start']} to {payload['period_end']}"
+    lines = [
+        f"Market: {market}",
+        f"Trading date: {trading_date}",
+        f"Period: {payload['period_start']} -> {payload['period_end']}",
+        "",
+        "Data counts:",
+        f"- raw lines: {payload.get('raw_lines', 0)}",
+        f"- normalized lines: {payload.get('normalized_lines', 0)}",
+        f"- raw JSON parse errors: {payload.get('raw_json_parse_errors', 0)}",
+        f"- symbols: {payload.get('symbol_count', 0)}",
+        "",
+        "AI analysis:",
+        ai_analysis or "not enabled",
+        "",
+        "Symbol summary:",
+    ]
+    for item in payload.get("symbol_summary", []):
+        lines.append(
+            f"- {item['symbol']}: first={item.get('first_price')} last={item.get('last_price')} "
+            f"return_pct={item.get('return_pct')} volume_delta={item.get('volume_delta')} records={item.get('records')}"
+        )
 
     message = EmailMessage()
     message["Subject"] = subject
@@ -131,9 +204,31 @@ def send_email(config: EmailConfig, message: EmailMessage) -> None:
         smtp.send_message(message)
 
 
-def send_daily_report(config: EmailConfig, base_dir: Path, market: str, trading_date: str) -> None:
+def send_daily_report(
+    config: EmailConfig,
+    base_dir: Path,
+    market: str,
+    trading_date: str,
+    ai_config: AIAnalysisConfig | None = None,
+) -> None:
     payload = build_daily_report_payload(base_dir, market, trading_date)
-    message = compose_daily_report_email(config, payload)
+    ai_analysis = analyze_market_report(ai_config, payload)
+    message = compose_daily_report_email(config, payload, ai_analysis=ai_analysis)
+    send_email(config, message)
+
+
+def send_intraday_report(
+    config: EmailConfig,
+    base_dir: Path,
+    market: str,
+    trading_date: str,
+    period_start: datetime,
+    period_end: datetime,
+    ai_config: AIAnalysisConfig | None = None,
+) -> None:
+    payload = build_intraday_report_payload(base_dir, market, trading_date, period_start, period_end)
+    ai_analysis = analyze_market_report(ai_config, payload)
+    message = compose_intraday_report_email(config, payload, ai_analysis=ai_analysis)
     send_email(config, message)
 
 
@@ -157,3 +252,44 @@ def _format_summary_item(item: dict[str, Any]) -> str:
     if not values:
         return symbol
     return f"{symbol} ({', '.join(values)})"
+
+
+def datetime_in_period(value: Any, period_start: datetime, period_end: datetime) -> bool:
+    parsed = parse_datetime(value)
+    if parsed is None:
+        return False
+    local_value = parsed.astimezone(period_start.tzinfo)
+    return period_start <= local_value < period_end
+
+
+def build_symbol_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        symbol = str(record.get("symbol") or "")
+        if symbol:
+            by_symbol.setdefault(symbol, []).append(record)
+
+    summaries = []
+    for symbol, rows in sorted(by_symbol.items()):
+        ordered = sorted(rows, key=lambda row: row.get("event_time") or "")
+        prices = [float(row["last_price"]) for row in ordered if row.get("last_price") is not None]
+        volumes = [int(row["volume_cumulative"]) for row in ordered if row.get("volume_cumulative") is not None]
+        first_price = prices[0] if prices else None
+        last_price = prices[-1] if prices else None
+        return_pct = None
+        if first_price and last_price:
+            return_pct = round((last_price / first_price - 1) * 100, 6)
+        volume_delta = None
+        if len(volumes) >= 2:
+            volume_delta = volumes[-1] - volumes[0]
+        summaries.append(
+            {
+                "symbol": symbol,
+                "records": len(rows),
+                "first_price": first_price,
+                "last_price": last_price,
+                "return_pct": return_pct,
+                "volume_delta": volume_delta,
+            }
+        )
+    return summaries
