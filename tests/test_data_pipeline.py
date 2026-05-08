@@ -192,16 +192,30 @@ class DataPipelineTest(unittest.TestCase):
         window_metric = json.loads(window_path.read_text(encoding="utf-8"))
         self.assertIn("largest_drawdown", window_metric["cross_symbol"])
         self.assertIn("quality_grade", window_metric["symbols"][0])
+        self.assertIn("window_status", window_metric)
+        self.assertIn("source_normalized_file", window_metric)
+        self.assertEqual(window_metric["metrics_version"], 1)
 
         daily = json.loads(daily_metrics_path.read_text(encoding="utf-8"))
         self.assertIn("market_summary", daily)
         self.assertIn("daily_return_pct", daily["symbols"][0])
+        self.assertIn("window_status_summary", daily)
 
         quality = json.loads(quality_path.read_text(encoding="utf-8"))
+        normalized_rows = [json.loads(line) for line in normalized_path.read_text(encoding="utf-8").splitlines()]
+        normalized_row = next(row for row in normalized_rows if row["record_id"])
+        self.assertEqual(normalized_row["schema_version"], 1)
+        self.assertIn("pipeline_version", normalized_row)
+        self.assertEqual(normalized_row["record_id"], f"{normalized_row['symbol']}_{normalized_row['event_time']}")
         self.assertEqual(quality["raw_quality"]["raw_lines"], 4)
         self.assertEqual(quality["raw_quality"]["json_parse_errors"], 1)
         self.assertEqual(quality["normalized_quality"]["normalized_lines"], 3)
         self.assertGreaterEqual(quality["window_quality"]["expected_windows"], 7)
+        self.assertIn("overall_grade", quality)
+        self.assertIn("usable_for_analysis", quality)
+        self.assertIn("time_series_quality", quality)
+        self.assertIn("source_metrics_path", quality)
+        self.assertIn("source_normalized_path", quality)
 
     def test_missing_raw_skips_normalize_without_traceback(self) -> None:
         output_path = normalize_day("HK", "2026-05-07", base_dir=self.base_dir)
@@ -286,6 +300,64 @@ class DataPipelineTest(unittest.TestCase):
         self.assertEqual(normalized["symbol"], "QQQ.US")
         self.assertTrue(metric["symbols"])
         self.assertEqual(metric["symbols"][0]["symbol"], "QQQ.US")
+
+    def test_empty_windows_count_toward_symbol_quality_expected_points(self) -> None:
+        raw_dir = self.base_dir / "data" / "raw" / "HK"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        raw_path = raw_dir / "2026-05-07.jsonl"
+        raw_path.write_text(
+            json.dumps(
+                {
+                    "collected_at": "2026-05-07T10:00:00+08:00",
+                    "provider": "mock",
+                    "market": "HK",
+                    "symbol": "0700.HK",
+                    "last_price": 500,
+                    "volume": 1000,
+                    "timestamp": "2026-05-07T10:00:00+08:00",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        all_day("HK", "2026-05-07", base_dir=self.base_dir)
+        quality_path = self.base_dir / "data" / "quality" / "HK" / "2026-05-07.json"
+        quality = json.loads(quality_path.read_text(encoding="utf-8"))
+        symbol_quality = quality["symbol_quality"]["0700.HK"]
+
+        self.assertEqual(symbol_quality["expected_points_total"], 165)
+        self.assertEqual(symbol_quality["actual_points_total"], 1)
+        self.assertGreater(symbol_quality["missing_ratio"], 0.99)
+
+    def test_duplicate_record_id_detection_and_spread_disabled(self) -> None:
+        raw_dir = self.base_dir / "data" / "raw" / "US"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        raw_path = raw_dir / "2026-05-07.jsonl"
+        row = {
+            "collected_at": "2026-05-07T09:30:00-04:00",
+            "provider": "mock",
+            "market": "US",
+            "symbol": "QQQ.US",
+            "last_price": 100,
+            "bid": 0,
+            "ask": 0,
+            "volume": 1000,
+            "timestamp": "2026-05-07T09:30:00-04:00",
+        }
+        raw_path.write_text(json.dumps(row) + "\n" + json.dumps(row) + "\n", encoding="utf-8")
+
+        normalize_day("US", "2026-05-07", base_dir=self.base_dir)
+        output_dir = metrics_day("US", "2026-05-07", base_dir=self.base_dir)
+        normalized_path = self.base_dir / "data" / "normalized" / "US" / "2026-05-07.jsonl"
+        rows = [json.loads(line) for line in normalized_path.read_text(encoding="utf-8").splitlines()]
+        metric = json.loads((output_dir / "window_0930_1030.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(rows[0]["record_id"], "QQQ.US_2026-05-07T09:30:00-04:00")
+        self.assertIn("duplicate_record", rows[1]["flags"])
+        self.assertFalse(metric["symbols"][0]["spread_metrics_available"])
+        self.assertIsNone(metric["symbols"][0]["avg_spread_pct"])
+
 
 
 if __name__ == "__main__":

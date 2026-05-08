@@ -155,7 +155,14 @@ def normalize_existing_raw(markets: list[str], now: datetime, state: RuntimeStat
             state.record_error("normalize", exc)
 
 
-def build_finished_windows(markets: list[str], now: datetime, state: RuntimeState, logger, force: bool = False) -> None:
+def build_finished_windows(
+    markets: list[str],
+    now: datetime,
+    state: RuntimeState,
+    logger,
+    force: bool = False,
+    collector_started_at: datetime | None = None,
+) -> None:
     for market in markets:
         trading_date = market_date(market, now)
         normalized_path = normalized_file_path(BASE_DIR, market, trading_date)
@@ -172,7 +179,14 @@ def build_finished_windows(markets: list[str], now: datetime, state: RuntimeStat
                 output_path = metrics_dir(BASE_DIR, market, trading_date) / f"window_{window.window_id}.json"
                 if output_path.exists() and not force:
                     continue
-                metric = build_window_metrics(normalized.records, market, trading_date, window)
+                metric = build_window_metrics(
+                    normalized.records,
+                    market,
+                    trading_date,
+                    window,
+                    source_normalized_file=str(normalized_path),
+                    session_metadata=build_session_metadata(collector_started_at),
+                )
                 write_json_atomic(output_path, metric)
                 state.mark_window_done(market, trading_date, window.window_id)
                 logger.info("built window metrics: %s", output_path)
@@ -329,6 +343,20 @@ def intraday_email_key(market: str, trading_date: str, period_start: datetime, p
     return f"{market}:{trading_date}:{period_start:%H%M}_{period_end:%H%M}"
 
 
+def build_session_metadata(collector_started_at: datetime | None) -> dict[str, object]:
+    if collector_started_at is None:
+        return {
+            "collector_started_at": "",
+            "collector_uptime_seconds": None,
+            "pipeline_restart_detected": False,
+        }
+    return {
+        "collector_started_at": collector_started_at.isoformat(timespec="seconds"),
+        "collector_uptime_seconds": int((datetime.now(UTC) - collector_started_at).total_seconds()),
+        "pipeline_restart_detected": False,
+    }
+
+
 def main() -> None:
     load_dotenv(BASE_DIR / ".env")
     logger = setup_logger("pipeline", "pipeline.log")
@@ -362,6 +390,7 @@ def main() -> None:
     )
     reference_store = ReferenceDataStore(BASE_DIR)
 
+    collector_started_at = datetime.now(UTC)
     last_collect = datetime.min.replace(tzinfo=UTC)
     markets = ["HK", "US"]
     logger.info("pipeline started provider=%s interval=%ss", provider, interval_seconds)
@@ -394,7 +423,7 @@ def main() -> None:
                     )
                 last_collect = now
 
-            build_finished_windows(markets, now, state, logger, force=force_rebuild)
+            build_finished_windows(markets, now, state, logger, force=force_rebuild, collector_started_at=collector_started_at)
             build_daily_after_close(markets, now, state, logger, force=force_rebuild, email_config=email_config, ai_config=ai_config)
         except Exception as exc:
             logger.exception("pipeline loop failed")

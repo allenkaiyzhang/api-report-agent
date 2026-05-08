@@ -17,9 +17,13 @@ from core.market_calendar import (
     get_market_windows,
 )
 from core.reference_data_store import ReferenceDataStore
+from core.time_series_quality import check_time_series_quality
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+NORMALIZED_SCHEMA_VERSION = 1
+PIPELINE_VERSION = "2026-05-08"
+METRICS_VERSION = 1
 ABNORMAL_SPREAD_PCT = 0.01
 ABNORMAL_VOLATILITY = 0.05
 INTERVAL_MINUTES = 2
@@ -161,16 +165,21 @@ def normalize_record(
 
     spread = None
     spread_pct = None
-    if bid is not None and ask is not None:
+    if bid is not None and ask is not None and bid > 0 and ask > 0 and ask >= bid:
         spread = ask - bid
         if last_price and last_price > 0:
             spread_pct = spread / last_price
             if spread_pct > ABNORMAL_SPREAD_PCT:
                 flags.append("abnormal_spread")
 
+    record_id = build_record_id(symbol, event_time)
     return {
+        "schema_version": NORMALIZED_SCHEMA_VERSION,
+        "pipeline_version": PIPELINE_VERSION,
+        "record_id": record_id,
         "event_time": event_time,
         "collected_at": collected,
+        "provider": str(raw_record.get("provider") or raw_record.get("market_data_provider") or ""),
         "market": normalized_market,
         "symbol": symbol,
         "currency": currency,
@@ -201,7 +210,7 @@ def normalize_day(market: str, trading_date: str, base_dir: Path = BASE_DIR) -> 
         reference_static_info_by_symbol = {}
 
     normalized_records: list[dict[str, Any]] = []
-    seen_keys: set[tuple[str, str, str]] = set()
+    seen_keys: set[str] = set()
     for raw_entry in load_result.records:
         for raw_record, collected_at in expand_raw_entry(raw_entry):
             normalized = normalize_record(
@@ -210,11 +219,11 @@ def normalize_day(market: str, trading_date: str, base_dir: Path = BASE_DIR) -> 
                 collected_at=collected_at,
                 reference_static_info_by_symbol=reference_static_info_by_symbol,
             )
-            key = (normalized["market"], normalized["symbol"], normalized["event_time"])
-            if all(key) and key in seen_keys:
+            key = normalized.get("record_id") or ""
+            if key and key in seen_keys:
                 normalized["flags"] = sorted(set(normalized["flags"] + ["duplicate_record"]))
                 normalized["is_valid"] = False
-            elif all(key):
+            elif key:
                 seen_keys.add(key)
             normalized_records.append(normalized)
 
@@ -254,6 +263,8 @@ def build_window_metrics(
     trading_date: str,
     window: MarketWindow,
     interval_minutes: int = INTERVAL_MINUTES,
+    source_normalized_file: str | None = None,
+    session_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build metrics for all symbols in one configured window."""
     records_in_window = [
@@ -286,14 +297,20 @@ def build_window_metrics(
                 }
             )
 
+    window_status = classify_window_status(records_in_window, symbol_metrics, window.expected_points)
     return {
+        "metrics_version": METRICS_VERSION,
         "market": normalize_market(market),
         "trading_date": trading_date,
         "window_id": window.window_id,
+        "window_status": window_status,
         "window_start": window.start.isoformat(timespec="seconds"),
         "window_end": window.end.isoformat(timespec="seconds"),
         "interval_minutes": interval_minutes,
         "expected_points": window.expected_points,
+        "source_normalized_file": source_normalized_file or "",
+        "generated_from_window": window.window_id,
+        "session_metadata": session_metadata or {},
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "symbols": symbol_metrics,
         "cross_symbol": build_cross_symbol_metrics(symbol_metrics),
@@ -380,6 +397,7 @@ def build_symbol_window_metrics(
         for record in valid_records
         if optional_float(record.get("spread_pct")) is not None
     ]
+    spread_metrics_available = bool(spread_values)
     max_spread = max(spread_values) if spread_values else None
     if max_spread is not None and max_spread > ABNORMAL_SPREAD_PCT:
         flags.append("abnormal_spread")
@@ -409,6 +427,7 @@ def build_symbol_window_metrics(
         "max_drawdown_pct": round(max_drawdown_pct(prices), 6) if prices else None,
         "avg_spread_pct": round(sum(spread_values) / len(spread_values), 8) if spread_values else None,
         "max_spread_pct": round(max_spread, 8) if max_spread is not None else None,
+        "spread_metrics_available": spread_metrics_available,
         "stale_price_periods": stale_price_periods,
         "quality_grade": quality_grade,
         "integrity_report": integrity_report,
@@ -490,10 +509,12 @@ def build_daily_metrics(market: str, trading_date: str, window_metrics: list[dic
         )
 
     return {
+        "metrics_version": METRICS_VERSION,
         "market": normalize_market(market),
         "trading_date": trading_date,
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "window_count": len(window_metrics),
+        "window_status_summary": dict(Counter(item.get("window_status", "missing") for item in window_metrics)),
         "symbols": symbols,
         "market_summary": build_daily_market_summary(symbols),
     }
@@ -505,6 +526,8 @@ def build_quality_report(
     raw_load_result: JsonlLoadResult,
     normalized_records: list[dict[str, Any]],
     window_metrics: list[dict[str, Any]],
+    source_metrics_path: str = "",
+    source_normalized_path: str = "",
 ) -> dict[str, Any]:
     """Build a daily data quality report from raw, normalized, and metrics layers."""
     flag_counts: Counter[str] = Counter()
@@ -536,8 +559,21 @@ def build_quality_report(
                 quality["duplicate_points"] += 1
             quality["flags"].update(flags)
 
-    expected_window_ids = {window.window_id for window in get_market_windows(market, trading_date)}
+    expected_windows = get_market_windows(market, trading_date)
+    expected_window_ids = {window.window_id for window in expected_windows}
     actual_window_ids = {item.get("window_id") for item in window_metrics}
+    normalized_symbols = sorted({record.get("symbol") for record in normalized_records if record.get("symbol")})
+    metrics_by_window = {item.get("window_id"): item for item in window_metrics}
+    for window in expected_windows:
+        metric = metrics_by_window.get(window.window_id, {})
+        metric_symbols = {item.get("symbol"): item for item in metric.get("symbols", [])}
+        for symbol in normalized_symbols:
+            quality = symbol_quality[symbol]
+            quality["expected_points_total"] += window.expected_points
+            item = metric_symbols.get(symbol)
+            if item:
+                quality["actual_points_total"] += int(item.get("actual_points") or 0)
+                quality["flags"].update(item.get("flags", []))
     low_quality_windows = []
     for metric in window_metrics:
         weak_symbols = [
@@ -547,11 +583,6 @@ def build_quality_report(
         ]
         if weak_symbols:
             low_quality_windows.append({"window_id": metric["window_id"], "symbols": weak_symbols})
-        for item in metric.get("symbols", []):
-            quality = symbol_quality[item["symbol"]]
-            quality["expected_points_total"] += int(item.get("expected_points") or 0)
-            quality["actual_points_total"] += int(item.get("actual_points") or 0)
-            quality["flags"].update(item.get("flags", []))
 
     symbol_quality_output = {}
     for symbol, quality in sorted(symbol_quality.items()):
@@ -566,10 +597,21 @@ def build_quality_report(
             "flags": sorted(quality["flags"]),
         }
 
+    time_series_quality = check_time_series_quality(normalized_records)
+    overall = classify_overall_quality(
+        symbol_quality_output=symbol_quality_output,
+        window_metrics=window_metrics,
+        normalized_count=len(normalized_records),
+        time_series_quality=time_series_quality,
+    )
     return {
         "market": normalize_market(market),
         "trading_date": trading_date,
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "overall_grade": overall["overall_grade"],
+        "usable_for_analysis": overall["usable_for_analysis"],
+        "quality_summary": overall["quality_summary"],
+        "time_series_quality": time_series_quality,
         "raw_quality": {
             "raw_lines": raw_load_result.raw_lines,
             "json_parse_errors": len(raw_load_result.json_parse_errors),
@@ -587,6 +629,8 @@ def build_quality_report(
             "missing_windows": sorted(expected_window_ids - actual_window_ids),
             "low_quality_windows": low_quality_windows,
         },
+        "source_metrics_path": source_metrics_path,
+        "source_normalized_path": source_normalized_path,
         "symbol_quality": symbol_quality_output,
     }
 
@@ -604,7 +648,7 @@ def metrics_day(market: str, trading_date: str, base_dir: Path = BASE_DIR) -> Pa
 
     window_metrics = []
     for window in get_market_windows(market, trading_date):
-        metric = build_window_metrics(load_result.records, market, trading_date, window)
+        metric = build_window_metrics(load_result.records, market, trading_date, window, source_normalized_file=str(normalized_path))
         window_metrics.append(metric)
         write_json_atomic(output_dir / f"window_{window.window_id}.json", metric)
 
@@ -689,6 +733,8 @@ def quality_day(market: str, trading_date: str, base_dir: Path = BASE_DIR) -> Pa
         raw_load_result=raw_load_result,
         normalized_records=normalized_load_result.records,
         window_metrics=window_metrics,
+        source_metrics_path=str(output_dir),
+        source_normalized_path=str(normalized_path),
     )
     write_json_atomic(output_path, report)
     logger.info("Generated quality report %s %s: %s", market, trading_date, output_path)
@@ -867,6 +913,76 @@ def record_belongs_to_window(record: dict[str, Any], window: MarketWindow) -> bo
         return False
     local_time = event_time.astimezone(window.start.tzinfo)
     return window.start <= local_time < window.end
+
+
+def build_record_id(symbol: str, event_time: str | None) -> str:
+    if not symbol or not event_time:
+        return ""
+    return f"{symbol}_{event_time}"
+
+
+def classify_window_status(
+    records_in_window: list[dict[str, Any]],
+    symbol_metrics: list[dict[str, Any]],
+    expected_points: int,
+) -> str:
+    if expected_points == 0:
+        return "pending"
+    if not records_in_window:
+        return "missing"
+    if not symbol_metrics:
+        return "unusable"
+    worst_missing_ratio = max((item.get("missing_ratio") or 0 for item in symbol_metrics), default=1)
+    if worst_missing_ratio > 0.4:
+        return "unusable"
+    if worst_missing_ratio > 0.05:
+        return "partial"
+    return "finalized"
+
+
+def classify_overall_quality(
+    symbol_quality_output: dict[str, dict[str, Any]],
+    window_metrics: list[dict[str, Any]],
+    normalized_count: int,
+    time_series_quality: dict[str, Any],
+) -> dict[str, Any]:
+    critical_issues = []
+    warnings = []
+    if normalized_count == 0:
+        critical_issues.append("no_normalized_records")
+    status_counts = Counter(item.get("window_status", "missing") for item in window_metrics)
+    if status_counts.get("missing", 0):
+        warnings.append("missing_windows")
+    if status_counts.get("unusable", 0) >= 2:
+        critical_issues.append("multiple_unusable_windows")
+    max_missing_ratio = max((item.get("missing_ratio") or 0 for item in symbol_quality_output.values()), default=1.0)
+    if max_missing_ratio > 0.7:
+        critical_issues.append("high_missing_ratio")
+    elif max_missing_ratio > 0.2:
+        warnings.append("moderate_missing_ratio")
+    if time_series_quality.get("duplicate_timestamps", 0):
+        warnings.append("duplicate_timestamps")
+    if time_series_quality.get("timestamp_gap_count", 0):
+        warnings.append("timestamp_gaps")
+    if time_series_quality.get("volume_decrease_count", 0) or time_series_quality.get("turnover_decrease_count", 0):
+        warnings.append("decreasing_cumulative_values")
+
+    if critical_issues and normalized_count == 0:
+        overall_grade = "unusable"
+    elif critical_issues:
+        overall_grade = "poor"
+    elif warnings:
+        overall_grade = "minor_issue"
+    else:
+        overall_grade = "good"
+    return {
+        "overall_grade": overall_grade,
+        "usable_for_analysis": overall_grade in {"good", "minor_issue"},
+        "quality_summary": {
+            "critical_issues": critical_issues,
+            "warnings": warnings,
+        },
+    }
 
 
 def log_empty_window_match(
