@@ -97,6 +97,22 @@ python scripts/run_pipeline.py
 
 In production, systemd should run `scripts/run_pipeline.py` directly from the project directory.
 
+Post-market offline processing can be run after market close:
+
+```bash
+python scripts/post_market_pipeline.py --market HK --date 2026-05-08
+python scripts/post_market_pipeline.py --market US --date 2026-05-08
+```
+
+Safe shell hook:
+
+```bash
+scripts/run_post_market.sh HK 2026-05-08
+scripts/run_post_market.sh US 2026-05-08
+```
+
+It finalizes metrics/quality, generates reports/features/timeline, archives raw JSONL, and writes a health report.
+
 ## Data Layout
 
 ```text
@@ -106,6 +122,12 @@ data/metrics/{market}/{trading_date}/windows.json
 data/metrics/{market}/{trading_date}/window_{window_id}.json
 data/metrics/{market}/{trading_date}/daily.json
 data/quality/{market}/{trading_date}.json
+data/reports/{market}/{trading_date}_market_summary.json
+data/reports/{market}/{trading_date}_timeline.json
+data/reports/{market}/{trading_date}_ai_summary.md
+data/reports/{market}/{trading_date}_health.json
+data/features/{market}/{trading_date}.json
+data/archive/raw/{market}/{trading_date}.jsonl.gz
 ```
 
 Raw data is append-only. Normalized, metrics, and quality layers are deterministic derived outputs and can be rebuilt from raw data.
