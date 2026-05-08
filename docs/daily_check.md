@@ -16,6 +16,18 @@ Write report to a file:
 python scripts/daily_check.py --date 2026-05-08 --markets HK,US --output runtime/daily_check_2026-05-08.json
 ```
 
+Send the same report by email using the existing SMTP settings:
+
+```bash
+python scripts/daily_check.py --date 2026-05-08 --markets HK,US --email
+```
+
+Or enable it by environment:
+
+```env
+DAILY_CHECK_EMAIL_ENABLED=true
+```
+
 ## Checks
 
 - systemd service active state
@@ -36,7 +48,7 @@ python scripts/daily_check.py --date 2026-05-08 --markets HK,US --output runtime
 ## Cron Example
 
 ```cron
-30 22 * * 1-5 cd /opt/api-report-agent && /opt/api-report-agent/.venv/bin/python scripts/daily_check.py --date $(date +\%F) --markets HK,US --output runtime/daily_check_$(date +\%F).json
+30 22 * * 1-5 cd /opt/api-report-agent && /opt/api-report-agent/.venv/bin/python scripts/daily_check.py --date $(date +\%F) --markets HK,US --output runtime/daily_check_$(date +\%F).json --email
 ```
 
 For US trading dates, make sure the date passed matches the US market trading date you want to inspect.

@@ -10,7 +10,8 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.daily_check import exit_code, run_daily_check
+from core.email_reporter import EmailConfig
+from scripts.daily_check import build_daily_check_email_body, exit_code, run_daily_check, send_daily_check_email
 from scripts.post_market_pipeline import run_post_market_pipeline
 
 
@@ -69,6 +70,43 @@ class DailyCheckTest(unittest.TestCase):
         self.assertTrue(report["markets"]["US"]["metrics"]["daily_exists"])
         self.assertTrue(report["markets"]["US"]["quality"]["exists"])
         self.assertGreaterEqual(report["markets"]["US"]["reports"]["report_file_count"], 1)
+
+    def test_daily_check_email_body_contains_summary(self) -> None:
+        report = {
+            "date": "2026-05-07",
+            "summary": {"status": "warning", "critical": [], "warnings": ["US:empty_windows"]},
+            "systemd": {"service": "api-report-agent.service", "status": "active"},
+            "disk": {"disk_used_percent": 12.3, "data_size_bytes": 100},
+        }
+
+        body = build_daily_check_email_body(report)
+
+        self.assertIn("Status: warning", body)
+        self.assertIn("US:empty_windows", body)
+
+    @patch("scripts.daily_check.send_email")
+    def test_send_daily_check_email_uses_existing_email_config(self, mock_send_email) -> None:
+        config = EmailConfig(
+            enabled=True,
+            smtp_host="smtp.example.com",
+            smtp_port=587,
+            smtp_username="user",
+            smtp_password="password",
+            smtp_use_tls=True,
+            sender="from@example.com",
+            recipients=("to@example.com",),
+        )
+        report = {
+            "date": "2026-05-07",
+            "summary": {"status": "ok", "critical": [], "warnings": []},
+            "systemd": {"service": "api-report-agent.service", "status": "active"},
+            "disk": {"disk_used_percent": 12.3, "data_size_bytes": 100},
+        }
+
+        sent = send_daily_check_email(report, config)
+
+        self.assertTrue(sent)
+        mock_send_email.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 from datetime import datetime
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.email_reporter import EmailConfig, send_email
 
 
 BASE_DIR = PROJECT_ROOT
@@ -37,6 +43,48 @@ def run_daily_check(trading_date: str, markets: list[str], base_dir: Path = BASE
 
     evaluate_summary(report)
     return report
+
+
+def send_daily_check_email(report: dict[str, Any], config: EmailConfig) -> bool:
+    if not config.enabled or not config.is_ready():
+        return False
+
+    summary = report.get("summary", {})
+    status = summary.get("status", "unknown")
+    subject = f"{config.subject_prefix} daily check {report.get('date')} status={status}"
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = config.sender
+    message["To"] = ", ".join(config.recipients)
+    message.set_content(build_daily_check_email_body(report))
+    send_email(config, message)
+    return True
+
+
+def build_daily_check_email_body(report: dict[str, Any]) -> str:
+    summary = report.get("summary", {})
+    lines = [
+        f"Daily Check: {report.get('date')}",
+        f"Status: {summary.get('status')}",
+        "",
+        "Critical:",
+        *[f"- {item}" for item in summary.get("critical", [])],
+        "",
+        "Warnings:",
+        *[f"- {item}" for item in summary.get("warnings", [])],
+        "",
+        "Systemd:",
+        f"- service: {report.get('systemd', {}).get('service')}",
+        f"- status: {report.get('systemd', {}).get('status')}",
+        "",
+        "Disk:",
+        f"- used percent: {report.get('disk', {}).get('disk_used_percent')}",
+        f"- data size bytes: {report.get('disk', {}).get('data_size_bytes')}",
+        "",
+        "Full JSON:",
+        json.dumps(report, ensure_ascii=False, indent=2, default=str),
+    ]
+    return "\n".join(lines)
 
 
 def check_systemd() -> dict[str, Any]:
@@ -269,13 +317,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--date", required=True)
     parser.add_argument("--markets", default="HK,US")
     parser.add_argument("--output")
+    parser.add_argument("--email", action="store_true", help="send the daily check report by email")
     return parser.parse_args()
 
 
 def main() -> None:
+    load_dotenv(BASE_DIR / ".env")
     args = parse_args()
     markets = [market.strip().upper() for market in args.markets.split(",") if market.strip()]
     report = run_daily_check(args.date, markets)
+    if args.email or os.getenv("DAILY_CHECK_EMAIL_ENABLED", "false").lower() == "true":
+        try:
+            sent = send_daily_check_email(report, EmailConfig.from_env(os.environ))
+            report.setdefault("daily_check_email", {})["sent"] = sent
+        except Exception as exc:
+            report.setdefault("daily_check_email", {})["sent"] = False
+            report.setdefault("daily_check_email", {})["error"] = str(exc)
     text = json.dumps(report, ensure_ascii=False, indent=2, default=str)
     if args.output:
         Path(args.output).write_text(text + "\n", encoding="utf-8")
