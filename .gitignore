@@ -20,12 +20,7 @@ venv/
 env/
 
 # Runtime data
-data/raw/*.jsonl
-data/raw/HK/*.jsonl
-data/raw/US/*.jsonl
-data/normalized/**/*.jsonl
-data/metrics/**/*.json
-data/quality/**/*.json
+data/
 logs/*
 !logs/.gitkeep
 runtime/*
