@@ -1,0 +1,20 @@
+{
+  "symbols": [
+    {
+      "symbol": "QQQ.US",
+      "enabled": true
+    },
+    {
+      "symbol": "SGOV.US",
+      "enabled": true
+    },
+    {
+      "symbol": "HSBC.US",
+      "enabled": true
+    },
+    {
+      "symbol": "VIX",
+      "enabled": true
+    }
+  ]
+}

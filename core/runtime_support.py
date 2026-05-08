@@ -73,6 +73,7 @@ class RuntimeState:
                 "last_metrics_window": {},
                 "last_daily_build": {},
                 "last_email_report": {},
+                "last_email_report_failure": {},
                 "collect_stats": {},
                 "last_successful_run": None,
                 "error_count": 0,
@@ -111,7 +112,20 @@ class RuntimeState:
     def mark_email_report_sent(self, market: str, trading_date: str) -> None:
         key = f"{market}:{trading_date}"
         self.data.setdefault("last_email_report", {})[key] = utc_now_text()
+        self.data.setdefault("last_email_report_failure", {}).pop(key, None)
         self.mark_success("last_email_report_time")
+
+    def email_report_failed(self, market: str, trading_date: str) -> bool:
+        key = f"{market}:{trading_date}"
+        return key in self.data.setdefault("last_email_report_failure", {})
+
+    def mark_email_report_failed(self, market: str, trading_date: str, error: str) -> None:
+        key = f"{market}:{trading_date}"
+        self.data.setdefault("last_email_report_failure", {})[key] = {
+            "time": utc_now_text(),
+            "error": error,
+        }
+        self.save()
 
     def record_collect_success(self, market: str, trading_date: str, output_path: str) -> None:
         stats = self._collect_stats(market, trading_date)

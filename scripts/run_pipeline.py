@@ -236,6 +236,9 @@ def send_daily_report_after_close(
     if state.email_report_sent(market, trading_date):
         logger.info("skip email because report already sent: %s %s", market, trading_date)
         return
+    if state.email_report_failed(market, trading_date):
+        logger.info("skip email because previous send failed today: %s %s", market, trading_date)
+        return
     if not (daily_path.exists() and quality_path.exists()):
         logger.info("skip email because daily or quality missing: %s %s", market, trading_date)
         return
@@ -245,8 +248,8 @@ def send_daily_report_after_close(
         state.mark_email_report_sent(market, trading_date)
         logger.info("sent daily email report: %s %s", market, trading_date)
     except Exception as exc:
-        logger.exception("email report failed for %s %s", market, trading_date)
-        state.record_error("email_report", exc)
+        logger.warning("email report failed for %s %s: %s", market, trading_date, exc)
+        state.mark_email_report_failed(market, trading_date, str(exc))
 
 
 def main() -> None:
@@ -260,7 +263,7 @@ def main() -> None:
     state = RuntimeState()
     state.set_status("running")
 
-    symbols = [row["symbol"] for row in load_symbols(BASE_DIR / "config" / "symbols.csv")]
+    symbols = [row["symbol"] for row in load_symbols(BASE_DIR / "config" / "symbols.json")]
     provider = os.getenv("MARKET_DATA_PROVIDER", "longbridge")
     interval_seconds = int(os.getenv("DATA_COLLECTION_INTERVAL_SECONDS", "120"))
     force_rebuild = os.getenv("PIPELINE_FORCE_REBUILD", "false").lower() == "true"

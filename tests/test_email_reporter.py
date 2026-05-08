@@ -77,6 +77,16 @@ class EmailReporterTest(unittest.TestCase):
         state.mark_email_report_sent("US", "2026-05-07")
         self.assertTrue(state.email_report_sent("US", "2026-05-07"))
 
+    def test_runtime_state_tracks_email_report_failure_without_error_count(self) -> None:
+        state_path = self.base_dir / "runtime" / "pipeline_status.json"
+        state = RuntimeState(path=state_path)
+
+        self.assertFalse(state.email_report_failed("US", "2026-05-07"))
+        state.mark_email_report_failed("US", "2026-05-07", "SMTP host not found")
+
+        self.assertTrue(state.email_report_failed("US", "2026-05-07"))
+        self.assertEqual(state.data.get("error_count", 0), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,6 +38,21 @@ LONGBRIDGE_APP_SECRET=your_app_secret
 LONGBRIDGE_ACCESS_TOKEN=your_access_token
 ```
 
+Edit watched symbols in `config/symbols.json`:
+
+```json
+{
+  "symbols": [
+    {
+      "symbol": "QQQ.US",
+      "enabled": true
+    }
+  ]
+}
+```
+
+Only `symbol` and `enabled` belong in this file. Name/type metadata should come from provider reference data. Watch reasons are intentionally left for a future dedicated file.
+
 ## Run
 
 The long-running process is started directly:
@@ -66,6 +81,7 @@ Raw data is append-only. Normalized, metrics, and quality layers are determinist
 ```text
 clients/
   market_client.py
+  symbols.json
 
 core/
   data_pipeline.py
