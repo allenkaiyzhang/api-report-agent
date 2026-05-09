@@ -23,6 +23,22 @@ systemd
 
 Copy `.env.example` to `.env` and set provider credentials when needed.
 
+Recommended first-time setup:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+cp config/symbols_example.json config/symbols.json
+```
+
+On Windows PowerShell, activate the virtual environment with:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
 ```env
 MARKET_DATA_PROVIDER=mock
 DATA_COLLECTION_INTERVAL_SECONDS=120
@@ -200,6 +216,59 @@ sudo journalctl -u api-report-agent-web.service -f
 ```
 
 See [docs/api_server.md](docs/api_server.md).
+
+## Deployment
+
+1. Clone or copy the repository to the server, for example `/opt/api-report-agent`.
+2. Create a virtual environment and install dependencies with `pip install -r requirements.txt`.
+3. Copy `.env.example` to `.env`, then set `MARKET_DATA_PROVIDER`, Longbridge credentials, email settings, AI settings, and a strong `API_CONTROL_TOKEN`.
+4. Copy `config/symbols_example.json` to `config/symbols.json` and keep only the symbols you want to collect.
+5. Run a foreground smoke test with `MARKET_DATA_PROVIDER=mock python scripts/run_pipeline.py`; stop it after one successful loop.
+6. Install separate systemd units for the pipeline and the web API. Keep the API bound to `127.0.0.1` and use an SSH tunnel or reverse proxy with authentication for remote access.
+7. Monitor `logs/`, `runtime/pipeline_status.json`, `/health`, and `journalctl` after deployment.
+
+Minimal pipeline systemd unit:
+
+```ini
+[Unit]
+Description=api-report-agent market data pipeline
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/api-report-agent
+EnvironmentFile=/opt/api-report-agent/.env
+ExecStart=/opt/api-report-agent/.venv/bin/python scripts/run_pipeline.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Optional post-market cron examples:
+
+```cron
+10 17 * * 1-5 cd /opt/api-report-agent && ./.venv/bin/python scripts/post_market_pipeline.py --market HK
+10 17 * * 1-5 cd /opt/api-report-agent && ./.venv/bin/python scripts/post_market_pipeline.py --market US
+```
+
+Adjust cron times to the server timezone and the target market close.
+
+## Simple QA
+
+Run the automated test suite before deployment:
+
+```bash
+python -m unittest discover tests
+```
+
+Useful manual checks:
+
+- `python scripts/healthcheck.py` should complete without unexpected errors.
+- `python scripts/test_email.py --ignore-enabled` should send a test email when SMTP settings are configured.
+- `uvicorn api_server:app --host 127.0.0.1 --port 8000` should expose `GET /health`.
+- `python scripts/post_market_pipeline.py --market US --date YYYY-MM-DD` should generate reports for a date with raw data.
+- Verify that `data/raw/`, `data/normalized/`, `data/metrics/`, `data/quality/`, and `runtime/pipeline_status.json` are updated after a collection loop.
 
 ## Data Layout
 

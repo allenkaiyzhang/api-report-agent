@@ -23,6 +23,22 @@ systemd
 
 复制 `.env.example` 为 `.env`，并按需配置数据源凭证。
 
+首次部署建议步骤：
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+cp config/symbols_example.json config/symbols.json
+```
+
+Windows PowerShell 中使用下面的命令启用虚拟环境：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
 ```env
 MARKET_DATA_PROVIDER=mock
 DATA_COLLECTION_INTERVAL_SECONDS=120
@@ -200,6 +216,59 @@ sudo journalctl -u api-report-agent-web.service -f
 ```
 
 详见 [docs/api_server.md](docs/api_server.md)。
+
+## 部署
+
+1. 将仓库 clone 或复制到服务器，例如 `/opt/api-report-agent`。
+2. 创建虚拟环境，并执行 `pip install -r requirements.txt` 安装依赖。
+3. 复制 `.env.example` 为 `.env`，配置 `MARKET_DATA_PROVIDER`、Longbridge 凭证、邮件、AI，以及强随机的 `API_CONTROL_TOKEN`。
+4. 复制 `config/symbols_example.json` 为 `config/symbols.json`，只保留需要采集的标的。
+5. 先用 `MARKET_DATA_PROVIDER=mock python scripts/run_pipeline.py` 做前台冒烟测试，确认至少完成一次循环后停止。
+6. 生产环境建议分别安装 pipeline 和 web API 的 systemd 服务。API 只绑定 `127.0.0.1`，远程访问通过 SSH tunnel 或带认证的反向代理。
+7. 部署后持续观察 `logs/`、`runtime/pipeline_status.json`、`/health` 和 `journalctl`。
+
+最小 pipeline systemd 示例：
+
+```ini
+[Unit]
+Description=api-report-agent market data pipeline
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/api-report-agent
+EnvironmentFile=/opt/api-report-agent/.env
+ExecStart=/opt/api-report-agent/.venv/bin/python scripts/run_pipeline.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+可选盘后 cron 示例：
+
+```cron
+10 17 * * 1-5 cd /opt/api-report-agent && ./.venv/bin/python scripts/post_market_pipeline.py --market HK
+10 17 * * 1-5 cd /opt/api-report-agent && ./.venv/bin/python scripts/post_market_pipeline.py --market US
+```
+
+请按服务器时区和目标市场收盘时间调整 cron。
+
+## 简单 QA
+
+部署前运行自动化测试：
+
+```bash
+python -m unittest discover tests
+```
+
+常用人工检查：
+
+- `python scripts/healthcheck.py` 应能完成，且没有非预期错误。
+- 配好 SMTP 后，`python scripts/test_email.py --ignore-enabled` 应能发出测试邮件。
+- `uvicorn api_server:app --host 127.0.0.1 --port 8000` 启动后，`GET /health` 应可访问。
+- 对已有 raw 数据的日期运行 `python scripts/post_market_pipeline.py --market US --date YYYY-MM-DD`，应生成报告文件。
+- 完成一次采集循环后，确认 `data/raw/`、`data/normalized/`、`data/metrics/`、`data/quality/` 和 `runtime/pipeline_status.json` 有更新。
 
 ## 数据布局
 
