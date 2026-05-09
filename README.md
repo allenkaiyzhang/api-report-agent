@@ -1,5 +1,7 @@
 # Market Data Pipeline
 
+中文文档: [README.zh-CN.md](README.zh-CN.md)
+
 api-report-agent is a deterministic market data pipeline for HK and US market data.
 
 It is intentionally not an Agent platform. Pipeline flow, collection, file writes, metrics, quality checks, replay, and market calendar logic are implemented with deterministic Python code.
@@ -185,3 +187,7 @@ scripts/
 - Missing inputs are logged and skipped, not treated as process-fatal errors.
 
 Future AI report generation may consume finalized metrics, events, and timelines, but it must not control collection, scheduling, metrics, quality, replay, or data writes.
+
+## Documentation Maintenance
+
+Keep `README.md` and `README.zh-CN.md` synchronized when updating project usage, configuration, deployment, or design rules.
