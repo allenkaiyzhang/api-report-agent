@@ -142,7 +142,7 @@ python -m scripts.extended_pipeline --interval-seconds 1800
 python -m scripts.extended_report --market US --date 2026-05-12
 ```
 
-盘外记录写入 `data/raw/US/extended/{session_window_id}.jsonl`，报告写入 `data/reports/extended/`。盘外 quality 规则不会影响 regular daily report。详见 [docs/extended_session.md](docs/extended_session.md)。
+盘外记录写入 `data/raw/US/extended/{session_window_id}.jsonl`，报告写入 `data/reports/extended/`。周末两天不采集；跨周末 extended window 只采周五盘后和周一盘前。盘外 quality 规则不会影响 regular daily report。详见 [docs/extended_session.md](docs/extended_session.md)。
 
 ## API 和 UI
 
@@ -204,7 +204,7 @@ sudo journalctl -u api-report-agent-web.service -f
 ## 数据布局
 
 ```text
-data/raw/{market}/regular/{trading_date}.jsonl
+data/raw/{market}/{trading_date}.jsonl
 data/raw/US/extended/{session_window_id}.jsonl
 data/normalized/{market}/{trading_date}.jsonl
 data/metrics/{market}/{trading_date}/windows.json

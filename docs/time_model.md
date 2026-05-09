@@ -93,10 +93,10 @@ premarket
 afterhours
 ```
 
-Regular raw files:
+Regular raw files keep the existing path:
 
 ```text
-data/raw/US/regular/2026-05-12.jsonl
+data/raw/US/2026-05-12.jsonl
 ```
 
 Extended raw files:

@@ -57,9 +57,9 @@ def latest_jsonl_file(market: str, session: str = "regular") -> Path | None:
     if session == "extended":
         base = BASE_DIR / "data" / "raw" / market / "extended"
     else:
-        layered = BASE_DIR / "data" / "raw" / market / "regular"
         legacy = BASE_DIR / "data" / "raw" / market
-        base = layered if layered.exists() else legacy
+        layered = BASE_DIR / "data" / "raw" / market / "regular"
+        base = legacy if legacy.exists() else layered
     if not base.exists():
         return None
     files = sorted(path for path in base.glob("*.jsonl") if path.is_file())

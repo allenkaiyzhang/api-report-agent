@@ -27,7 +27,10 @@ def is_us_regular_session(now_utc: datetime | None = None) -> bool:
 
 
 def should_collect_us_extended(now_utc: datetime | None = None) -> bool:
-    return not is_us_regular_session(now_utc)
+    now = (now_utc or datetime.now(UTC)).astimezone(US_TZ)
+    if now.weekday() >= 5:
+        return False
+    return not is_us_regular_session(now)
 
 
 def get_us_extended_window(now_utc: datetime | None = None) -> ExtendedWindow:

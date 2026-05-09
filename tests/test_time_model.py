@@ -11,6 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.time_model import normalize_source_timestamp
+from core.extended_session import should_collect_us_extended
 from scripts.extended_pipeline import append_extended_records
 
 
@@ -54,6 +55,17 @@ class TimeModelTest(unittest.TestCase):
         self.assertEqual(row["session_window_id"], "US_EXT_2026-05-08_TO_2026-05-11")
         self.assertTrue(row["collected_at_utc"].endswith("Z"))
         self.assertTrue(row["source_timestamp_utc"].endswith("Z"))
+
+    def test_extended_collection_skips_weekend_but_keeps_friday_afterhours_and_monday_premarket(self) -> None:
+        friday_after_close = datetime(2026, 5, 8, 21, 30, tzinfo=UTC)
+        saturday_midday = datetime(2026, 5, 9, 16, 0, tzinfo=UTC)
+        sunday_midday = datetime(2026, 5, 10, 16, 0, tzinfo=UTC)
+        monday_premarket = datetime(2026, 5, 11, 12, 0, tzinfo=UTC)
+
+        self.assertTrue(should_collect_us_extended(friday_after_close))
+        self.assertFalse(should_collect_us_extended(saturday_midday))
+        self.assertFalse(should_collect_us_extended(sunday_midday))
+        self.assertTrue(should_collect_us_extended(monday_premarket))
 
 
 if __name__ == "__main__":

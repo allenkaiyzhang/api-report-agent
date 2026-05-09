@@ -31,7 +31,7 @@ class DailyJsonlMarketDataStore:
         collected_at: datetime,
         provider: str,
     ) -> list[Path]:
-        """Append regular-session raw records into data/raw/{market}/regular/YYYY-MM-DD.jsonl."""
+        """Append regular-session raw records into data/raw/{market}/YYYY-MM-DD.jsonl."""
         output_paths: dict[str, Path] = {}
         collected_at_text = collected_at.astimezone(self.file_timezone).isoformat(timespec="seconds")
         collected_at_utc = iso_utc(collected_at)
@@ -40,7 +40,7 @@ class DailyJsonlMarketDataStore:
             symbol = str(record.get("symbol", ""))
             market = infer_symbol_market(symbol)
             file_date = get_trading_date(market, collected_at)
-            output_path = self.output_dir / market / "regular" / f"{file_date}.jsonl"
+            output_path = self.output_dir / market / f"{file_date}.jsonl"
             output_path.parent.mkdir(parents=True, exist_ok=True)
             source_raw, timezone_name, source_utc = normalize_source_timestamp(
                 record.get("source_timestamp_raw") or record.get("timestamp") or record.get("event_time"),

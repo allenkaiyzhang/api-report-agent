@@ -29,7 +29,7 @@ The extended window is:
 previous US regular close -> next US regular open
 ```
 
-Weekend windows are allowed. For example:
+Weekend windows can span Friday close to Monday open, but collection is not attempted on Saturday or Sunday because quotes are typically unavailable. The weekend window should collect Friday after-hours and Monday premarket only.
 
 ```text
 Friday regular close -> Monday regular open

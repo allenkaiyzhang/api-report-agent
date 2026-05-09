@@ -142,7 +142,7 @@ python -m scripts.extended_pipeline --interval-seconds 1800
 python -m scripts.extended_report --market US --date 2026-05-12
 ```
 
-Extended records are written to `data/raw/US/extended/{session_window_id}.jsonl` and reports are written to `data/reports/extended/`. Extended quality rules are isolated from regular daily reports. See [docs/extended_session.md](docs/extended_session.md).
+Extended records are written to `data/raw/US/extended/{session_window_id}.jsonl` and reports are written to `data/reports/extended/`. Weekend collection is skipped; the weekend extended window only collects Friday after-hours and Monday premarket. Extended quality rules are isolated from regular daily reports. See [docs/extended_session.md](docs/extended_session.md).
 
 ## API and UI
 
@@ -204,7 +204,7 @@ See [docs/api_server.md](docs/api_server.md).
 ## Data Layout
 
 ```text
-data/raw/{market}/regular/{trading_date}.jsonl
+data/raw/{market}/{trading_date}.jsonl
 data/raw/US/extended/{session_window_id}.jsonl
 data/normalized/{market}/{trading_date}.jsonl
 data/metrics/{market}/{trading_date}/windows.json

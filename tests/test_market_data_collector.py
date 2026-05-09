@@ -59,8 +59,7 @@ class MarketDataCollectorTest(unittest.TestCase):
         output_path = output_paths[0]
         self.assertTrue(output_path.exists())
         self.assertEqual(output_path.name, "2026-05-07.jsonl")
-        self.assertEqual(output_path.parent.name, "regular")
-        self.assertEqual(output_path.parent.parent.name, "US")
+        self.assertEqual(output_path.parent.name, "US")
         lines = output_path.read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(lines), 1)
         record = json.loads(lines[0])
