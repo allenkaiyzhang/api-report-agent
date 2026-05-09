@@ -56,6 +56,18 @@ EMAIL_SUBJECT_PREFIX=[api-report-agent]
 
 Intraday email reports are sent during market hours every two hours by default, using only data collected in that two-hour window. Daily email reports are still sent after market close once daily metrics and quality files exist.
 
+Test the exact project email settings from `.env`:
+
+```bash
+python scripts/test_email.py
+```
+
+The script uses the same `EmailConfig` and SMTP sender as the pipeline. It prints a masked config summary before sending. If you need to test SMTP while `EMAIL_ENABLED=false`, run:
+
+```bash
+python scripts/test_email.py --ignore-enabled
+```
+
 Optional AI analysis can be included in email reports. AI is only used for report summarization and never controls collection, scheduling, metrics, or quality logic.
 
 ```env
