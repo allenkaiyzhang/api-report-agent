@@ -46,7 +46,6 @@ DATA_COLLECTION_OUTPUT_DIR=data/raw
 DATA_COLLECTION_FILE_TIMEZONE=Asia/Shanghai
 PIPELINE_LOOP_SLEEP_SECONDS=10
 PIPELINE_FORCE_REBUILD=false
-API_CONTROL_TOKEN=change-me
 ```
 
 Longbridge credentials:
@@ -160,72 +159,15 @@ python -m scripts.extended_report --market US --date 2026-05-12
 
 Extended records are written to `data/raw/US/extended/{session_window_id}.jsonl` and reports are written to `data/reports/extended/`. Weekend collection is skipped; the weekend extended window only collects Friday after-hours and Monday premarket. Extended quality rules are isolated from regular daily reports. See [docs/extended_session.md](docs/extended_session.md).
 
-## API and UI
-
-Start the local API server:
-
-```bash
-uvicorn api_server:app --host 127.0.0.1 --port 8000
-```
-
-Read-only JSON endpoints include `/health`, `/symbols`, `/markets/{market}/latest`, `/sessions/{market}/regular/latest`, `/sessions/{market}/extended/latest`, `/quotes/{symbol}/latest`, and `/reports`.
-
-Control endpoints require:
-
-```text
-X-API-Token: value-of-API_CONTROL_TOKEN
-```
-
-UI pages:
-
-```text
-/ui/dashboard
-/ui/reports
-/ui/control
-```
-
-Keep the API bound to localhost and access it through SSH tunnel:
-
-```bash
-ssh -L 8000:127.0.0.1:8000 user@your-ecs-host
-```
-
-systemd example:
-
-```ini
-[Unit]
-Description=api-report-agent web API
-After=network.target
-
-[Service]
-WorkingDirectory=/opt/api-report-agent
-EnvironmentFile=/opt/api-report-agent/.env
-ExecStart=/opt/api-report-agent/.venv/bin/uvicorn api_server:app --host 127.0.0.1 --port 8000
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable api-report-agent-web.service
-sudo systemctl restart api-report-agent-web.service
-sudo journalctl -u api-report-agent-web.service -f
-```
-
-See [docs/api_server.md](docs/api_server.md).
-
 ## Deployment
 
 1. Clone or copy the repository to the server, for example `/opt/api-report-agent`.
 2. Create a virtual environment and install dependencies with `pip install -r requirements.txt`.
-3. Copy `.env.example` to `.env`, then set `MARKET_DATA_PROVIDER`, Longbridge credentials, email settings, AI settings, and a strong `API_CONTROL_TOKEN`.
+3. Copy `.env.example` to `.env`, then set `MARKET_DATA_PROVIDER`, Longbridge credentials, email settings, and AI settings.
 4. Copy `config/symbols_example.json` to `config/symbols.json` and keep only the symbols you want to collect.
 5. Run a foreground smoke test with `MARKET_DATA_PROVIDER=mock python scripts/run_pipeline.py`; stop it after one successful loop.
-6. Install separate systemd units for the pipeline and the web API. Keep the API bound to `127.0.0.1` and use an SSH tunnel or reverse proxy with authentication for remote access.
-7. Monitor `logs/`, `runtime/pipeline_status.json`, `/health`, and `journalctl` after deployment.
+6. Install the systemd unit for the pipeline.
+7. Monitor `logs/`, `runtime/pipeline_status.json`, and `journalctl` after deployment.
 
 Minimal pipeline systemd unit:
 
@@ -266,7 +208,6 @@ Useful manual checks:
 
 - `python scripts/healthcheck.py` should complete without unexpected errors.
 - `python scripts/test_email.py --ignore-enabled` should send a test email when SMTP settings are configured.
-- `uvicorn api_server:app --host 127.0.0.1 --port 8000` should expose `GET /health`.
 - `python scripts/post_market_pipeline.py --market US --date YYYY-MM-DD` should generate reports for a date with raw data.
 - Verify that `data/raw/`, `data/normalized/`, `data/metrics/`, `data/quality/`, and `runtime/pipeline_status.json` are updated after a collection loop.
 
