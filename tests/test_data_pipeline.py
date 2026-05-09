@@ -283,7 +283,7 @@ class DataPipelineTest(unittest.TestCase):
                     "previous_close": 445,
                     "volume": 1000,
                     "turnover": 450000,
-                    "timestamp": "2026-05-07 23:20:59",
+                    "timestamp": "2026-05-07 11:20:59",
                 }
             )
             + "\n",
@@ -296,7 +296,10 @@ class DataPipelineTest(unittest.TestCase):
         normalized = json.loads(normalized_path.read_text(encoding="utf-8").splitlines()[0])
         metric = json.loads((output_dir / "window_1030_1130.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(normalized["event_time"], "2026-05-07T23:20:59+08:00")
+        self.assertEqual(normalized["event_time"], "2026-05-07T15:20:59Z")
+        self.assertEqual(normalized["source_timestamp_raw"], "2026-05-07 11:20:59")
+        self.assertEqual(normalized["source_timestamp_utc"], "2026-05-07T15:20:59Z")
+        self.assertEqual(normalized["market_timezone"], "America/New_York")
         self.assertEqual(normalized["symbol"], "QQQ.US")
         self.assertTrue(metric["symbols"])
         self.assertEqual(metric["symbols"][0]["symbol"], "QQQ.US")
@@ -353,7 +356,7 @@ class DataPipelineTest(unittest.TestCase):
         rows = [json.loads(line) for line in normalized_path.read_text(encoding="utf-8").splitlines()]
         metric = json.loads((output_dir / "window_0930_1030.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(rows[0]["record_id"], "QQQ.US_2026-05-07T09:30:00-04:00")
+        self.assertEqual(rows[0]["record_id"], "QQQ.US_2026-05-07T13:30:00Z")
         self.assertIn("duplicate_record", rows[1]["flags"])
         self.assertFalse(metric["symbols"][0]["spread_metrics_available"])
         self.assertIsNone(metric["symbols"][0]["avg_spread_pct"])

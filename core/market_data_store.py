@@ -7,6 +7,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from core.market_calendar import get_trading_date
+from core.time_model import iso_utc, market_timezone_name, normalize_source_timestamp, regular_session_window_id
 from core.trading_hours import infer_symbol_market
 
 
@@ -30,21 +31,42 @@ class DailyJsonlMarketDataStore:
         collected_at: datetime,
         provider: str,
     ) -> list[Path]:
-        """Append raw records into data/raw/{market}/YYYY-MM-DD.jsonl without mutation."""
+        """Append regular-session raw records into data/raw/{market}/regular/YYYY-MM-DD.jsonl."""
         output_paths: dict[str, Path] = {}
         collected_at_text = collected_at.astimezone(self.file_timezone).isoformat(timespec="seconds")
+        collected_at_utc = iso_utc(collected_at)
 
         for record in records:
             symbol = str(record.get("symbol", ""))
             market = infer_symbol_market(symbol)
             file_date = get_trading_date(market, collected_at)
-            output_path = self.output_dir / market / f"{file_date}.jsonl"
+            output_path = self.output_dir / market / "regular" / f"{file_date}.jsonl"
             output_path.parent.mkdir(parents=True, exist_ok=True)
+            source_raw, timezone_name, source_utc = normalize_source_timestamp(
+                record.get("source_timestamp_raw") or record.get("timestamp") or record.get("event_time"),
+                market,
+            )
             raw_line = {
                 "collected_at": collected_at_text,
+                "collected_at_utc": collected_at_utc,
                 "provider": provider,
+                "market": market,
+                "market_timezone": timezone_name or market_timezone_name(market),
+                "session": "regular",
+                "trading_date": file_date,
+                "session_window_id": regular_session_window_id(market, file_date),
+                "source_timestamp_raw": source_raw,
+                "source_timestamp_utc": source_utc,
                 **record,
             }
+            raw_line["market"] = market
+            raw_line["session"] = "regular"
+            raw_line["trading_date"] = file_date
+            raw_line["session_window_id"] = regular_session_window_id(market, file_date)
+            raw_line["market_timezone"] = timezone_name or market_timezone_name(market)
+            raw_line["collected_at_utc"] = collected_at_utc
+            raw_line["source_timestamp_raw"] = source_raw
+            raw_line["source_timestamp_utc"] = source_utc
             with output_path.open("a", encoding="utf-8") as file:
                 file.write(json.dumps(raw_line, ensure_ascii=False, default=str))
                 file.write("\n")

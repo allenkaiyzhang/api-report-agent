@@ -30,6 +30,7 @@ DATA_COLLECTION_OUTPUT_DIR=data/raw
 DATA_COLLECTION_FILE_TIMEZONE=Asia/Shanghai
 PIPELINE_LOOP_SLEEP_SECONDS=10
 PIPELINE_FORCE_REBUILD=false
+API_CONTROL_TOKEN=change-me
 ```
 
 Longbridge credentials:
@@ -93,13 +94,18 @@ Edit watched symbols in `config/symbols.json`:
   "symbols": [
     {
       "symbol": "QQQ.US",
+      "market": "US",
+      "asset_type": "equity_etf",
+      "liquidity_class": "high",
+      "include_in_movers": true,
+      "sessions": ["regular", "extended"],
       "enabled": true
     }
   ]
 }
 ```
 
-Only `symbol` and `enabled` belong in this file. Name/type metadata should come from provider reference data. Watch reasons are intentionally left for a future dedicated file.
+Old `symbol` + `enabled` entries remain supported. The extended fields let the service separate regular and extended-session behavior without moving to a database.
 
 ## Run
 
@@ -107,6 +113,7 @@ The long-running process is started directly:
 
 ```bash
 python scripts/run_pipeline.py
+python -m scripts.pipeline_runner
 ```
 
 In production, systemd should run `scripts/run_pipeline.py` directly from the project directory.
@@ -127,10 +134,78 @@ scripts/run_post_market.sh US 2026-05-08
 
 It finalizes metrics/quality, generates reports/features/timeline, archives raw JSONL, and writes a health report.
 
+US extended-session collection is separate from the regular pipeline:
+
+```bash
+python -m scripts.extended_pipeline --once
+python -m scripts.extended_pipeline --interval-seconds 1800
+python -m scripts.extended_report --market US --date 2026-05-12
+```
+
+Extended records are written to `data/raw/US/extended/{session_window_id}.jsonl` and reports are written to `data/reports/extended/`. Extended quality rules are isolated from regular daily reports. See [docs/extended_session.md](docs/extended_session.md).
+
+## API and UI
+
+Start the local API server:
+
+```bash
+uvicorn api_server:app --host 127.0.0.1 --port 8000
+```
+
+Read-only JSON endpoints include `/health`, `/symbols`, `/markets/{market}/latest`, `/sessions/{market}/regular/latest`, `/sessions/{market}/extended/latest`, `/quotes/{symbol}/latest`, and `/reports`.
+
+Control endpoints require:
+
+```text
+X-API-Token: value-of-API_CONTROL_TOKEN
+```
+
+UI pages:
+
+```text
+/ui/dashboard
+/ui/reports
+/ui/control
+```
+
+Keep the API bound to localhost and access it through SSH tunnel:
+
+```bash
+ssh -L 8000:127.0.0.1:8000 user@your-ecs-host
+```
+
+systemd example:
+
+```ini
+[Unit]
+Description=api-report-agent web API
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/api-report-agent
+EnvironmentFile=/opt/api-report-agent/.env
+ExecStart=/opt/api-report-agent/.venv/bin/uvicorn api_server:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable api-report-agent-web.service
+sudo systemctl restart api-report-agent-web.service
+sudo journalctl -u api-report-agent-web.service -f
+```
+
+See [docs/api_server.md](docs/api_server.md).
+
 ## Data Layout
 
 ```text
-data/raw/{market}/{trading_date}.jsonl
+data/raw/{market}/regular/{trading_date}.jsonl
+data/raw/US/extended/{session_window_id}.jsonl
 data/normalized/{market}/{trading_date}.jsonl
 data/metrics/{market}/{trading_date}/windows.json
 data/metrics/{market}/{trading_date}/window_{window_id}.json
@@ -140,11 +215,34 @@ data/reports/{market}/{trading_date}_market_summary.json
 data/reports/{market}/{trading_date}_timeline.json
 data/reports/{market}/{trading_date}_ai_summary.md
 data/reports/{market}/{trading_date}_health.json
+data/reports/extended/
 data/features/{market}/{trading_date}.json
 data/archive/raw/{market}/{trading_date}.jsonl.gz
 ```
 
 Raw data is append-only. Normalized, metrics, and quality layers are deterministic derived outputs and can be rebuilt from raw data.
+
+## Time Model
+
+New records use UTC internally. Market timezone is stored separately and used only for normalization, `trading_date`, session windows, and UI display.
+
+Longbridge timestamps are treated as market-local time:
+
+```text
+Longbridge timestamp -> attach market timezone -> convert to UTC -> source_timestamp_utc
+```
+
+Example:
+
+```json
+{
+  "source_timestamp_raw": "2026-05-12 09:30:00",
+  "market_timezone": "America/New_York",
+  "source_timestamp_utc": "2026-05-12T13:30:00Z"
+}
+```
+
+`trading_date` is derived from market local time, not UTC date. US uses `America/New_York`, so EDT/EST daylight-saving changes are handled by `zoneinfo`. See [docs/time_model.md](docs/time_model.md).
 
 ## Modules
 
@@ -163,7 +261,10 @@ core/
   trading_hours.py
 
 scripts/
+  pipeline_runner.py
   run_pipeline.py
+  extended_pipeline.py
+  extended_report.py
   market_data_collector.py
   replay.py
   debug_chart.py

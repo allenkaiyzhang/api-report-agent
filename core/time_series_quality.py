@@ -11,9 +11,9 @@ def check_time_series_quality(
 ) -> dict[str, Any]:
     parsed_rows = sorted(
         [
-            (parse_datetime(record.get("event_time")), record)
+            (parse_datetime(record.get("source_timestamp_utc") or record.get("event_time")), record)
             for record in records
-            if parse_datetime(record.get("event_time")) is not None
+            if parse_datetime(record.get("source_timestamp_utc") or record.get("event_time")) is not None
         ],
         key=lambda item: item[0] or datetime.min,
     )

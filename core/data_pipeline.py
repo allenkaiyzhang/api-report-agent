@@ -18,6 +18,13 @@ from core.market_calendar import (
 )
 from core.reference_data_store import ReferenceDataStore
 from core.time_series_quality import check_time_series_quality
+from core.time_model import (
+    datetime_value_has_timezone,
+    iso_utc,
+    market_timezone_name,
+    normalize_source_timestamp,
+    parse_datetime as parse_datetime_aware,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -38,12 +45,6 @@ MARKET_CURRENCIES = {
     "HK": "HKD",
     "US": "USD",
 }
-LONG_BRIDGE_NAIVE_TIMESTAMP_TIMEZONE = ZoneInfo("Asia/Shanghai")
-MARKET_NAIVE_TIMESTAMP_TIMEZONES = {
-    "HK": ZoneInfo("Asia/Hong_Kong"),
-    "US": LONG_BRIDGE_NAIVE_TIMESTAMP_TIMEZONE,
-}
-
 logger = logging.getLogger("data_pipeline")
 
 
@@ -122,11 +123,21 @@ def normalize_record(
 
     event_time = normalize_event_timestamp(raw_record, normalized_market)
     collected = normalize_timestamp(
-        collected_at
+        raw_record.get("collected_at_utc")
+        or collected_at
         or raw_record.get("collected_at")
-        or raw_record.get("collected_at_utc")
         or raw_record.get("collected_at_local")
     )
+    source_timestamp_raw = str(
+        raw_record.get("source_timestamp_raw")
+        or raw_record.get("timestamp")
+        or raw_record.get("event_time")
+        or raw_record.get("quote_time")
+        or ""
+    )
+    _, timezone_name, source_timestamp_utc = normalize_source_timestamp(source_timestamp_raw, normalized_market)
+    if raw_record.get("source_timestamp_utc"):
+        source_timestamp_utc = normalize_timestamp(raw_record.get("source_timestamp_utc"))
 
     last_price = optional_float(
         raw_record.get("last_price")
@@ -179,6 +190,13 @@ def normalize_record(
         "record_id": record_id,
         "event_time": event_time,
         "collected_at": collected,
+        "collected_at_utc": collected,
+        "source_timestamp_raw": source_timestamp_raw,
+        "source_timestamp_utc": source_timestamp_utc,
+        "market_timezone": str(raw_record.get("market_timezone") or timezone_name or market_timezone_name(normalized_market)),
+        "session": str(raw_record.get("session") or "regular"),
+        "trading_date": str(raw_record.get("trading_date") or ""),
+        "session_window_id": str(raw_record.get("session_window_id") or ""),
         "provider": str(raw_record.get("provider") or raw_record.get("market_data_provider") or ""),
         "market": normalized_market,
         "symbol": symbol,
@@ -1032,7 +1050,12 @@ def max_drawdown_pct(prices: list[float]) -> float:
 
 
 def raw_file_path(base_dir: Path, market: str, trading_date: str) -> Path:
-    return base_dir / "data" / "raw" / normalize_market(market) / f"{trading_date}.jsonl"
+    market = normalize_market(market)
+    regular_path = base_dir / "data" / "raw" / market / "regular" / f"{trading_date}.jsonl"
+    legacy_path = base_dir / "data" / "raw" / market / f"{trading_date}.jsonl"
+    if regular_path.exists():
+        return regular_path
+    return legacy_path
 
 
 def normalized_file_path(base_dir: Path, market: str, trading_date: str) -> Path:
@@ -1079,60 +1102,44 @@ def normalize_timestamp(value: Any) -> str | None:
     parsed = parse_datetime(value)
     if parsed is None:
         return None
-    return parsed.isoformat(timespec="seconds")
+    return iso_utc(parsed)
 
 
 def normalize_event_timestamp(raw_record: dict[str, Any], market: str) -> str | None:
+    source_utc = raw_record.get("source_timestamp_utc")
+    if source_utc not in (None, ""):
+        parsed = parse_datetime(source_utc)
+        if parsed is not None:
+            return iso_utc(parsed)
+
     event_time_value = raw_record.get("event_time")
     if event_time_value not in (None, ""):
-        parsed = parse_datetime(event_time_value, default_timezone=MARKET_NAIVE_TIMESTAMP_TIMEZONES[market])
+        parsed = parse_datetime(event_time_value, default_timezone=ZoneInfo(market_timezone_name(market)))
         if parsed is not None and datetime_value_has_timezone(event_time_value):
-            return parsed.isoformat(timespec="seconds")
+            return iso_utc(parsed)
         if parsed is not None and raw_record.get("timestamp") in (None, ""):
-            return parsed.isoformat(timespec="seconds")
+            return iso_utc(parsed)
 
     timestamp_value = raw_record.get("timestamp") or raw_record.get("quote_time")
-    parsed = parse_datetime(timestamp_value, default_timezone=MARKET_NAIVE_TIMESTAMP_TIMEZONES[market])
+    parsed = parse_datetime(timestamp_value, default_timezone=ZoneInfo(market_timezone_name(market)))
     if parsed is not None:
-        return parsed.isoformat(timespec="seconds")
+        return iso_utc(parsed)
 
     if event_time_value not in (None, ""):
-        parsed = parse_datetime(event_time_value, default_timezone=MARKET_NAIVE_TIMESTAMP_TIMEZONES[market])
+        parsed = parse_datetime(event_time_value, default_timezone=ZoneInfo(market_timezone_name(market)))
         if parsed is not None:
-            return parsed.isoformat(timespec="seconds")
+            return iso_utc(parsed)
     return None
 
 
 def parse_datetime(value: Any, default_timezone: tzinfo = UTC) -> datetime | None:
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=default_timezone)
-    if value in (None, ""):
+    timezone = default_timezone if isinstance(default_timezone, ZoneInfo) else None
+    parsed = parse_datetime_aware(value, default_timezone=timezone)
+    if parsed is None:
         return None
-    text = str(value).strip()
-    try:
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=default_timezone)
-
-
-def datetime_value_has_timezone(value: Any) -> bool:
-    if isinstance(value, datetime):
-        return value.tzinfo is not None
-    text = str(value or "").strip()
-    if not text:
-        return False
-    if text.endswith("Z"):
-        return True
-    if "T" in text:
-        time_part = text.rsplit("T", 1)[1]
-    elif " " in text:
-        time_part = text.rsplit(" ", 1)[1]
-    else:
-        return False
-    return "+" in time_part or "-" in time_part
+    if timezone is None and parsed.tzinfo is None:
+        return parsed.replace(tzinfo=default_timezone)
+    return parsed
 
 
 def parse_time(value: str) -> time:

@@ -30,6 +30,7 @@ DATA_COLLECTION_OUTPUT_DIR=data/raw
 DATA_COLLECTION_FILE_TIMEZONE=Asia/Shanghai
 PIPELINE_LOOP_SLEEP_SECONDS=10
 PIPELINE_FORCE_REBUILD=false
+API_CONTROL_TOKEN=change-me
 ```
 
 Longbridge 凭证：
@@ -93,13 +94,18 @@ GEMINI_MODEL=gemini-2.5-flash
   "symbols": [
     {
       "symbol": "QQQ.US",
+      "market": "US",
+      "asset_type": "equity_etf",
+      "liquidity_class": "high",
+      "include_in_movers": true,
+      "sessions": ["regular", "extended"],
       "enabled": true
     }
   ]
 }
 ```
 
-该文件只保留 `symbol` 和 `enabled`。名称、类型等元数据应来自 provider reference data。watch reason 预留给未来单独文件实现。
+旧的 `symbol` + `enabled` 格式仍然兼容。新增字段用于区分 regular 和 extended session 行为，不需要引入数据库。
 
 ## 运行
 
@@ -107,6 +113,7 @@ GEMINI_MODEL=gemini-2.5-flash
 
 ```bash
 python scripts/run_pipeline.py
+python -m scripts.pipeline_runner
 ```
 
 生产环境中，systemd 应从项目目录直接运行 `scripts/run_pipeline.py`。
@@ -127,10 +134,78 @@ scripts/run_post_market.sh US 2026-05-08
 
 它会 finalize metrics/quality，生成 reports/features/timeline，归档 raw JSONL，并写入 health report。
 
+美股盘外采集与 regular pipeline 分离：
+
+```bash
+python -m scripts.extended_pipeline --once
+python -m scripts.extended_pipeline --interval-seconds 1800
+python -m scripts.extended_report --market US --date 2026-05-12
+```
+
+盘外记录写入 `data/raw/US/extended/{session_window_id}.jsonl`，报告写入 `data/reports/extended/`。盘外 quality 规则不会影响 regular daily report。详见 [docs/extended_session.md](docs/extended_session.md)。
+
+## API 和 UI
+
+启动本地 API 服务：
+
+```bash
+uvicorn api_server:app --host 127.0.0.1 --port 8000
+```
+
+只读 JSON 接口包括 `/health`、`/symbols`、`/markets/{market}/latest`、`/sessions/{market}/regular/latest`、`/sessions/{market}/extended/latest`、`/quotes/{symbol}/latest` 和 `/reports`。
+
+控制接口要求：
+
+```text
+X-API-Token: value-of-API_CONTROL_TOKEN
+```
+
+UI 页面：
+
+```text
+/ui/dashboard
+/ui/reports
+/ui/control
+```
+
+API 应只绑定 localhost，并通过 SSH tunnel 访问：
+
+```bash
+ssh -L 8000:127.0.0.1:8000 user@your-ecs-host
+```
+
+systemd 示例：
+
+```ini
+[Unit]
+Description=api-report-agent web API
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/api-report-agent
+EnvironmentFile=/opt/api-report-agent/.env
+ExecStart=/opt/api-report-agent/.venv/bin/uvicorn api_server:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable api-report-agent-web.service
+sudo systemctl restart api-report-agent-web.service
+sudo journalctl -u api-report-agent-web.service -f
+```
+
+详见 [docs/api_server.md](docs/api_server.md)。
+
 ## 数据布局
 
 ```text
-data/raw/{market}/{trading_date}.jsonl
+data/raw/{market}/regular/{trading_date}.jsonl
+data/raw/US/extended/{session_window_id}.jsonl
 data/normalized/{market}/{trading_date}.jsonl
 data/metrics/{market}/{trading_date}/windows.json
 data/metrics/{market}/{trading_date}/window_{window_id}.json
@@ -140,11 +215,34 @@ data/reports/{market}/{trading_date}_market_summary.json
 data/reports/{market}/{trading_date}_timeline.json
 data/reports/{market}/{trading_date}_ai_summary.md
 data/reports/{market}/{trading_date}_health.json
+data/reports/extended/
 data/features/{market}/{trading_date}.json
 data/archive/raw/{market}/{trading_date}.jsonl.gz
 ```
 
 Raw 数据只追加写入。Normalized、metrics 和 quality 都是确定性的派生层，可由 raw 数据重建。
+
+## 时间模型
+
+新记录在系统内部统一使用 UTC。市场时区会单独保存，只用于 normalize、`trading_date`、session window 和 UI 展示。
+
+Longbridge timestamp 按市场本地时间处理：
+
+```text
+Longbridge timestamp -> 绑定市场时区 -> 转换为 UTC -> source_timestamp_utc
+```
+
+示例：
+
+```json
+{
+  "source_timestamp_raw": "2026-05-12 09:30:00",
+  "market_timezone": "America/New_York",
+  "source_timestamp_utc": "2026-05-12T13:30:00Z"
+}
+```
+
+`trading_date` 来自市场本地日期，不等于 UTC 日期。美股使用 `America/New_York`，由 `zoneinfo` 自动处理 EDT/EST 夏令时切换。详见 [docs/time_model.md](docs/time_model.md)。
 
 ## 模块
 
@@ -163,7 +261,10 @@ core/
   trading_hours.py
 
 scripts/
+  pipeline_runner.py
   run_pipeline.py
+  extended_pipeline.py
+  extended_report.py
   market_data_collector.py
   replay.py
   debug_chart.py

@@ -2,18 +2,38 @@
   "symbols": [
     {
       "symbol": "QQQ.US",
+      "market": "US",
+      "asset_type": "equity_etf",
+      "liquidity_class": "high",
+      "include_in_movers": true,
+      "sessions": ["regular", "extended"],
       "enabled": true
     },
     {
       "symbol": "SGOV.US",
+      "market": "US",
+      "asset_type": "treasury_etf",
+      "liquidity_class": "reference",
+      "include_in_movers": false,
+      "sessions": ["regular"],
       "enabled": true
     },
     {
       "symbol": "HSBC.US",
+      "market": "US",
+      "asset_type": "equity",
+      "liquidity_class": "medium",
+      "include_in_movers": true,
+      "sessions": ["regular"],
       "enabled": true
     },
     {
       "symbol": "VIX",
+      "market": "US",
+      "asset_type": "index",
+      "liquidity_class": "reference",
+      "include_in_movers": false,
+      "sessions": ["regular"],
       "enabled": true
     }
   ]

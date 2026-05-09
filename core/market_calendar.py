@@ -5,6 +5,8 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from core.time_model import MARKET_TIMEZONE_NAMES
+
 
 DAILY_BUILD_DELAY_MINUTES = 10
 
@@ -27,8 +29,8 @@ class MarketWindow:
 
 
 MARKET_TIMEZONES = {
-    "HK": ZoneInfo("Asia/Hong_Kong"),
-    "US": ZoneInfo("America/New_York"),
+    "HK": ZoneInfo(MARKET_TIMEZONE_NAMES["HK"]),
+    "US": ZoneInfo(MARKET_TIMEZONE_NAMES["US"]),
 }
 
 MARKET_SESSIONS = {
@@ -148,10 +150,11 @@ def should_build_daily(
     if base_dir is None:
         return True
 
-    raw_path = base_dir / "data" / "raw" / market / f"{trading_date}.jsonl"
+    regular_raw_path = base_dir / "data" / "raw" / market / "regular" / f"{trading_date}.jsonl"
+    legacy_raw_path = base_dir / "data" / "raw" / market / f"{trading_date}.jsonl"
     metrics_path = base_dir / "data" / "metrics" / market / trading_date
     daily_path = metrics_path / "daily.json"
-    has_data = raw_path.exists() or metrics_path.exists()
+    has_data = regular_raw_path.exists() or legacy_raw_path.exists() or metrics_path.exists()
     needs_build = force_rebuild or not daily_path.exists()
     return has_data and needs_build
 

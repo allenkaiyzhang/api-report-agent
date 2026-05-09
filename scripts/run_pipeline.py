@@ -131,7 +131,7 @@ def collect_market(
             output_paths = collector.run_once(target_symbols, now=now)
             if output_paths:
                 for output_path in output_paths:
-                    output_market = output_path.parent.name
+                    output_market = output_path.parent.parent.name if output_path.parent.name in {"regular", "extended"} else output_path.parent.name
                     output_date = output_path.stem
                     state.record_collect_success(output_market, output_date, str(output_path))
             return

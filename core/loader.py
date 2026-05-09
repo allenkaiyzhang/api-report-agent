@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-def load_symbols(path: Path) -> list[dict[str, str]]:
+def load_symbols(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         raise FileNotFoundError(f"Symbols file not found: {path}")
 
@@ -14,7 +14,7 @@ def load_symbols(path: Path) -> list[dict[str, str]]:
     return load_symbols_json(path)
 
 
-def load_symbols_json(path: Path) -> list[dict[str, str]]:
+def load_symbols_json(path: Path) -> list[dict[str, Any]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -28,7 +28,7 @@ def load_symbols_json(path: Path) -> list[dict[str, str]]:
     if not isinstance(rows, list):
         raise ValueError("Symbols JSON must contain a list or an object with a symbols list")
 
-    symbols: list[dict[str, str]] = []
+    symbols: list[dict[str, Any]] = []
     for item in rows:
         row = normalize_symbol_item(item)
         if row.get("symbol") and row.get("enabled", "true").lower() != "false":
@@ -36,15 +36,42 @@ def load_symbols_json(path: Path) -> list[dict[str, str]]:
     return symbols
 
 
-def normalize_symbol_item(item: Any) -> dict[str, str]:
+def normalize_symbol_item(item: Any) -> dict[str, Any]:
     if isinstance(item, str):
+        symbol = item.strip()
         return {
-            "symbol": item.strip(),
+            "symbol": symbol,
+            "market": infer_market_from_symbol(symbol),
+            "asset_type": "",
+            "liquidity_class": "",
+            "include_in_movers": True,
+            "sessions": ["regular"],
             "enabled": "true",
         }
     if not isinstance(item, dict):
         return {}
+    symbol = str(item.get("symbol", "")).strip()
+    sessions = item.get("sessions", ["regular"])
+    if isinstance(sessions, str):
+        sessions = [part.strip() for part in sessions.split(",") if part.strip()]
+    if not isinstance(sessions, list):
+        sessions = ["regular"]
     return {
-        "symbol": str(item.get("symbol", "")).strip(),
+        "symbol": symbol,
+        "market": str(item.get("market") or infer_market_from_symbol(symbol)).strip().upper(),
+        "asset_type": str(item.get("asset_type", "")).strip(),
+        "liquidity_class": str(item.get("liquidity_class", "")).strip().lower(),
+        "include_in_movers": parse_bool(item.get("include_in_movers", True)),
+        "sessions": [str(session).strip().lower() for session in sessions if str(session).strip()],
         "enabled": str(item.get("enabled", True)).strip().lower(),
     }
+
+
+def infer_market_from_symbol(symbol: str) -> str:
+    return "HK" if symbol.upper().endswith(".HK") else "US"
+
+
+def parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}
