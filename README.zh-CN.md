@@ -72,6 +72,15 @@ EMAIL_TO=
 EMAIL_SUBJECT_PREFIX=[api-report-agent]
 ```
 
+通知：
+
+```env
+NOTIFY_CHANNELS=email,archive
+NOTIFICATION_ARCHIVE_DIR=/opt/api-report-agent/data/notifications
+```
+
+项目内所有通知统一走 `core.notification.notify()`。本项目只支持 `email` 和本地 `archive`；如果 `NOTIFY_CHANNELS` 中出现 `telegram`，会被忽略，api-report-agent 不会直接调用 Telegram。Telegram 推送由另一台 `tg_schedule_bot` 主机通过 SSH 拉取通知归档后完成。
+
 盘中邮件默认在交易时段内每 2 小时发送一次，只包含这 2 小时窗口内采集到的数据。盘后邮件仍会在收盘后、daily metrics 和 quality 文件都存在时发送。
 
 使用 `.env` 中的真实项目邮件配置测试发送：
@@ -84,6 +93,19 @@ python scripts/test_email.py
 
 ```bash
 python scripts/test_email.py --ignore-enabled
+```
+
+只测试本地 archive 通知：
+
+```bash
+python -m scripts.test_notify
+```
+
+查看当天通知归档：
+
+```bash
+scripts/notifications_tail.sh
+scripts/notifications_tail.sh 100
 ```
 
 邮件中可以附带可选 AI 分析。AI 只用于报告摘要，不控制采集、调度、metrics 或 quality 逻辑。
@@ -196,6 +218,17 @@ WantedBy=multi-user.target
 
 请按服务器时区和目标市场收盘时间调整 cron。
 
+## Redeploy
+
+在 ECS 上使用项目自带脚本重新部署：
+
+```bash
+chmod +x redeploy.sh
+sudo ./redeploy.sh
+```
+
+脚本固定在 `/opt/api-report-agent` 执行，会检查 `.env`，缺失 `.venv` 时自动创建，安装 `requirements.txt`，执行 `systemctl daemon-reload`，重启 `api-report-agent`，输出 service 状态，并追加写入 `/opt/api-report-agent/deploy.log`。
+
 ## 简单 QA
 
 部署前运行自动化测试：
@@ -226,6 +259,7 @@ data/reports/{market}/{trading_date}_timeline.json
 data/reports/{market}/{trading_date}_ai_summary.md
 data/reports/{market}/{trading_date}_health.json
 data/reports/extended/
+data/notifications/{YYYY-MM-DD}.jsonl
 data/features/{market}/{trading_date}.json
 data/archive/raw/{market}/{trading_date}.jsonl.gz
 ```

@@ -16,7 +16,7 @@ Write report to a file:
 python scripts/daily_check.py --date 2026-05-08 --markets HK,US --output runtime/daily_check_2026-05-08.json
 ```
 
-Send the same report by email using the existing SMTP settings:
+Send the same report through `notify()` using configured notification channels:
 
 ```bash
 python scripts/daily_check.py --date 2026-05-08 --markets HK,US --email
@@ -27,6 +27,8 @@ Or enable it by environment:
 ```env
 DAILY_CHECK_EMAIL_ENABLED=true
 ```
+
+`notify()` writes the local archive first, then attempts email if enabled. Telegram is not called by this project.
 
 ## Checks
 

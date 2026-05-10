@@ -72,6 +72,15 @@ EMAIL_TO=
 EMAIL_SUBJECT_PREFIX=[api-report-agent]
 ```
 
+Notifications:
+
+```env
+NOTIFY_CHANNELS=email,archive
+NOTIFICATION_ARCHIVE_DIR=/opt/api-report-agent/data/notifications
+```
+
+All project notifications go through `core.notification.notify()`. This project only supports `email` and local `archive`; if `telegram` appears in `NOTIFY_CHANNELS`, it is ignored and never called from api-report-agent. Telegram delivery should be handled by the separate `tg_schedule_bot` host by pulling the notification archive over SSH.
+
 Intraday email reports are sent during market hours every two hours by default, using only data collected in that two-hour window. Daily email reports are still sent after market close once daily metrics and quality files exist.
 
 Test the exact project email settings from `.env`:
@@ -84,6 +93,19 @@ The script uses the same `EmailConfig` and SMTP sender as the pipeline. It print
 
 ```bash
 python scripts/test_email.py --ignore-enabled
+```
+
+Test archive notification only:
+
+```bash
+python -m scripts.test_notify
+```
+
+View today's notification archive:
+
+```bash
+scripts/notifications_tail.sh
+scripts/notifications_tail.sh 100
 ```
 
 Optional AI analysis can be included in email reports. AI is only used for report summarization and never controls collection, scheduling, metrics, or quality logic.
@@ -196,6 +218,17 @@ Optional post-market cron examples:
 
 Adjust cron times to the server timezone and the target market close.
 
+## Redeploy
+
+Use the bundled redeploy script on ECS:
+
+```bash
+chmod +x redeploy.sh
+sudo ./redeploy.sh
+```
+
+The script runs in `/opt/api-report-agent`, checks `.env`, creates `.venv` if missing, installs `requirements.txt`, runs `systemctl daemon-reload`, restarts `api-report-agent`, prints service status, and appends output to `/opt/api-report-agent/deploy.log`.
+
 ## Simple QA
 
 Run the automated test suite before deployment:
@@ -226,6 +259,7 @@ data/reports/{market}/{trading_date}_timeline.json
 data/reports/{market}/{trading_date}_ai_summary.md
 data/reports/{market}/{trading_date}_health.json
 data/reports/extended/
+data/notifications/{YYYY-MM-DD}.jsonl
 data/features/{market}/{trading_date}.json
 data/archive/raw/{market}/{trading_date}.jsonl.gz
 ```

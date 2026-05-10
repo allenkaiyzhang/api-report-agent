@@ -204,20 +204,20 @@ def send_email(config: EmailConfig, message: EmailMessage) -> None:
         smtp.send_message(message)
 
 
-def send_daily_report(
+def build_daily_report_notification(
     config: EmailConfig,
     base_dir: Path,
     market: str,
     trading_date: str,
     ai_config: AIAnalysisConfig | None = None,
-) -> None:
+) -> tuple[str, str, dict[str, Any]]:
     payload = build_daily_report_payload(base_dir, market, trading_date)
     ai_analysis = analyze_market_report(ai_config, payload)
     message = compose_daily_report_email(config, payload, ai_analysis=ai_analysis)
-    send_email(config, message)
+    return str(message["Subject"]), message.get_content(), payload
 
 
-def send_intraday_report(
+def build_intraday_report_notification(
     config: EmailConfig,
     base_dir: Path,
     market: str,
@@ -225,11 +225,11 @@ def send_intraday_report(
     period_start: datetime,
     period_end: datetime,
     ai_config: AIAnalysisConfig | None = None,
-) -> None:
+) -> tuple[str, str, dict[str, Any]]:
     payload = build_intraday_report_payload(base_dir, market, trading_date, period_start, period_end)
     ai_analysis = analyze_market_report(ai_config, payload)
     message = compose_intraday_report_email(config, payload, ai_analysis=ai_analysis)
-    send_email(config, message)
+    return str(message["Subject"]), message.get_content(), payload
 
 
 def load_json(path: Path) -> dict[str, Any]:

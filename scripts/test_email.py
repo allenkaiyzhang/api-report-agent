@@ -4,7 +4,6 @@ import argparse
 import os
 import sys
 from datetime import UTC, datetime
-from email.message import EmailMessage
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -13,7 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.email_reporter import EmailConfig, send_email
+from core.email_reporter import EmailConfig
+from core.notification import notify
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,30 +76,18 @@ def validate_config(config: EmailConfig, ignore_enabled: bool = False) -> list[s
     return errors
 
 
-def build_message(config: EmailConfig, subject_suffix: str | None, body: str | None) -> EmailMessage:
+def build_message_text(body: str | None) -> str:
     now = datetime.now(UTC).isoformat(timespec="seconds")
-    subject = f"{config.subject_prefix} test email"
-    if subject_suffix:
-        subject = f"{subject} {subject_suffix}"
-
-    message = EmailMessage()
-    message["Subject"] = subject
-    message["From"] = config.sender
-    message["To"] = ", ".join(config.recipients)
-    message.set_content(
-        body
-        or "\n".join(
-            [
-                "This is a test email from api-report-agent.",
-                "",
-                f"sent_at_utc: {now}",
-                "config_source: project env",
-                "",
-                "If this arrives, SMTP delivery works with the same EmailConfig used by the pipeline.",
-            ]
-        )
+    return body or "\n".join(
+        [
+            "This is a test email from api-report-agent.",
+            "",
+            f"sent_at_utc: {now}",
+            "config_source: project env",
+            "",
+            "If this arrives, SMTP delivery works through core.notification.notify().",
+        ]
     )
-    return message
 
 
 def main() -> int:
@@ -121,14 +109,18 @@ def main() -> int:
             print(f"- {error}", file=sys.stderr)
         return 2
 
-    message = build_message(config, args.subject, args.body)
     try:
-        send_email(config, message)
+        if args.ignore_enabled:
+            os.environ["EMAIL_ENABLED"] = "true"
+        title = "test email"
+        if args.subject:
+            title = f"{title} {args.subject}"
+        result = notify(title=title, body=build_message_text(args.body), channels=["email"])
     except Exception as exc:
         print(f"test email failed: {exc}", file=sys.stderr)
         return 1
 
-    print(f"test email sent to: {', '.join(mask_value(item) for item in config.recipients)}")
+    print(f"test email result: {result.get('results', {}).get('email')}")
     return 0
 
 

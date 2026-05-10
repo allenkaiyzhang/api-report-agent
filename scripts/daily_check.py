@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime
-from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.email_reporter import EmailConfig, send_email
+from core.notification import notify
 
 
 BASE_DIR = PROJECT_ROOT
@@ -45,20 +44,19 @@ def run_daily_check(trading_date: str, markets: list[str], base_dir: Path = BASE
     return report
 
 
-def send_daily_check_email(report: dict[str, Any], config: EmailConfig) -> bool:
-    if not config.enabled or not config.is_ready():
-        return False
-
+def send_daily_check_notification(report: dict[str, Any]) -> dict[str, Any]:
     summary = report.get("summary", {})
     status = summary.get("status", "unknown")
-    subject = f"{config.subject_prefix} daily check {report.get('date')} status={status}"
-    message = EmailMessage()
-    message["Subject"] = subject
-    message["From"] = config.sender
-    message["To"] = ", ".join(config.recipients)
-    message.set_content(build_daily_check_email_body(report))
-    send_email(config, message)
-    return True
+    return notify(
+        title=f"daily check {report.get('date')} status={status}",
+        body=build_daily_check_email_body(report),
+        level="error" if status == "critical" else "warning" if status == "warning" else "info",
+        metadata={
+            "type": "daily_check",
+            "date": report.get("date"),
+            "status": status,
+        },
+    )
 
 
 def build_daily_check_email_body(report: dict[str, Any]) -> str:
@@ -328,11 +326,11 @@ def main() -> None:
     report = run_daily_check(args.date, markets)
     if args.email or os.getenv("DAILY_CHECK_EMAIL_ENABLED", "false").lower() == "true":
         try:
-            sent = send_daily_check_email(report, EmailConfig.from_env(os.environ))
-            report.setdefault("daily_check_email", {})["sent"] = sent
+            result = send_daily_check_notification(report)
+            report.setdefault("daily_check_notification", {})["results"] = result.get("results", {})
+            report.setdefault("daily_check_notification", {})["id"] = result.get("id")
         except Exception as exc:
-            report.setdefault("daily_check_email", {})["sent"] = False
-            report.setdefault("daily_check_email", {})["error"] = str(exc)
+            report.setdefault("daily_check_notification", {})["error"] = str(exc)
     text = json.dumps(report, ensure_ascii=False, indent=2, default=str)
     if args.output:
         Path(args.output).write_text(text + "\n", encoding="utf-8")

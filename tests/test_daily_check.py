@@ -10,8 +10,7 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.email_reporter import EmailConfig
-from scripts.daily_check import build_daily_check_email_body, exit_code, run_daily_check, send_daily_check_email
+from scripts.daily_check import build_daily_check_email_body, exit_code, run_daily_check, send_daily_check_notification
 from scripts.post_market_pipeline import run_post_market_pipeline
 
 
@@ -84,18 +83,9 @@ class DailyCheckTest(unittest.TestCase):
         self.assertIn("Status: warning", body)
         self.assertIn("US:empty_windows", body)
 
-    @patch("scripts.daily_check.send_email")
-    def test_send_daily_check_email_uses_existing_email_config(self, mock_send_email) -> None:
-        config = EmailConfig(
-            enabled=True,
-            smtp_host="smtp.example.com",
-            smtp_port=587,
-            smtp_username="user",
-            smtp_password="password",
-            smtp_use_tls=True,
-            sender="from@example.com",
-            recipients=("to@example.com",),
-        )
+    @patch("scripts.daily_check.notify")
+    def test_send_daily_check_notification_uses_notify(self, mock_notify) -> None:
+        mock_notify.return_value = {"id": "n1", "results": {"archive": {"status": "ok"}}}
         report = {
             "date": "2026-05-07",
             "summary": {"status": "ok", "critical": [], "warnings": []},
@@ -103,10 +93,10 @@ class DailyCheckTest(unittest.TestCase):
             "disk": {"disk_used_percent": 12.3, "data_size_bytes": 100},
         }
 
-        sent = send_daily_check_email(report, config)
+        result = send_daily_check_notification(report)
 
-        self.assertTrue(sent)
-        mock_send_email.assert_called_once()
+        self.assertEqual(result["id"], "n1")
+        mock_notify.assert_called_once()
 
 
 if __name__ == "__main__":

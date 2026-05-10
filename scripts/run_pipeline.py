@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from clients.market_client import MarketClient
 from core.ai_analyzer import AIAnalysisConfig
-from core.email_reporter import EmailConfig, send_daily_report, send_intraday_report
+from core.email_reporter import EmailConfig, build_daily_report_notification, build_intraday_report_notification
 from core.loader import load_symbols
 from core.market_calendar import (
     get_market_local_now,
@@ -40,6 +40,7 @@ from core.data_pipeline import (
     build_window_metrics,
 )
 from core.runtime_support import RuntimeState, setup_logger
+from core.notification import notify
 from scripts.market_data_collector import MarketDataCollector
 
 
@@ -246,27 +247,31 @@ def send_daily_report_after_close(
     state: RuntimeState,
     logger,
 ) -> None:
-    if email_config is None or not email_config.enabled:
-        return
-    if not email_config.is_ready():
-        logger.info("skip email because config incomplete: %s %s", market, trading_date)
-        return
     if state.email_report_sent(market, trading_date):
-        logger.info("skip email because report already sent: %s %s", market, trading_date)
-        return
-    if state.email_report_failed(market, trading_date):
-        logger.info("skip email because previous send failed today: %s %s", market, trading_date)
+        logger.info("skip notification because report already sent: %s %s", market, trading_date)
         return
     if not (daily_path.exists() and quality_path.exists()):
-        logger.info("skip email because daily or quality missing: %s %s", market, trading_date)
+        logger.info("skip notification because daily or quality missing: %s %s", market, trading_date)
         return
 
     try:
-        send_daily_report(email_config, BASE_DIR, market, trading_date, ai_config=ai_config)
+        config = email_config or EmailConfig.from_env(os.environ)
+        title, body, payload = build_daily_report_notification(config, BASE_DIR, market, trading_date, ai_config=ai_config)
+        result = notify(
+            title=title,
+            body=body,
+            level="info",
+            metadata={
+                "type": "daily_report",
+                "market": market,
+                "trading_date": trading_date,
+                "payload": payload,
+            },
+        )
         state.mark_email_report_sent(market, trading_date)
-        logger.info("sent daily email report: %s %s", market, trading_date)
+        logger.info("sent daily notification: %s %s results=%s", market, trading_date, result.get("results", {}))
     except Exception as exc:
-        logger.warning("email report failed for %s %s: %s", market, trading_date, exc)
+        logger.warning("daily notification failed for %s %s: %s", market, trading_date, exc)
         state.mark_email_report_failed(market, trading_date, str(exc))
 
 
@@ -279,12 +284,6 @@ def send_intraday_reports(
     ai_config: AIAnalysisConfig | None,
     interval_hours: int = DEFAULT_INTRADAY_EMAIL_INTERVAL_HOURS,
 ) -> None:
-    if email_config is None or not email_config.enabled:
-        return
-    if not email_config.is_ready():
-        logger.info("skip intraday email because config incomplete")
-        return
-
     for market in markets:
         window = intraday_email_window(market, now, interval_hours)
         if window is None:
@@ -294,15 +293,16 @@ def send_intraday_reports(
         if state.intraday_email_report_sent(key):
             continue
         if state.intraday_email_report_failed(key):
-            logger.info("skip intraday email because previous send failed: %s", key)
+            logger.info("skip intraday notification because previous send failed: %s", key)
             continue
         if not (raw_file_path(BASE_DIR, market, trading_date).exists() and normalized_file_path(BASE_DIR, market, trading_date).exists()):
-            logger.info("skip intraday email because raw or normalized missing: %s", key)
+            logger.info("skip intraday notification because raw or normalized missing: %s", key)
             continue
 
         try:
-            send_intraday_report(
-                email_config,
+            config = email_config or EmailConfig.from_env(os.environ)
+            title, body, payload = build_intraday_report_notification(
+                config,
                 BASE_DIR,
                 market,
                 trading_date,
@@ -310,10 +310,23 @@ def send_intraday_reports(
                 period_end,
                 ai_config=ai_config,
             )
+            result = notify(
+                title=title,
+                body=body,
+                level="info",
+                metadata={
+                    "type": "intraday_report",
+                    "market": market,
+                    "trading_date": trading_date,
+                    "period_start": period_start.isoformat(timespec="seconds"),
+                    "period_end": period_end.isoformat(timespec="seconds"),
+                    "payload": payload,
+                },
+            )
             state.mark_intraday_email_report_sent(key)
-            logger.info("sent intraday email report: %s", key)
+            logger.info("sent intraday notification: %s results=%s", key, result.get("results", {}))
         except Exception as exc:
-            logger.warning("intraday email report failed for %s: %s", key, exc)
+            logger.warning("intraday notification failed for %s: %s", key, exc)
             state.mark_intraday_email_report_failed(key, str(exc))
 
 
