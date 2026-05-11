@@ -67,6 +67,9 @@ SMTP_PORT=587
 SMTP_USERNAME=
 SMTP_PASSWORD=
 SMTP_USE_TLS=true
+SMTP_FORCE_IPV4=true
+SMTP_RETRIES=3
+SMTP_RETRY_SECONDS=5
 EMAIL_FROM=
 EMAIL_TO=
 EMAIL_SUBJECT_PREFIX=[api-report-agent]
@@ -83,6 +86,8 @@ NOTIFICATION_ARCHIVE_DIR=/opt/api-report-agent/data/notifications
 
 盘中邮件默认在交易时段内每 2 小时发送一次，只包含这 2 小时窗口内采集到的数据。盘后邮件仍会在收盘后、daily metrics 和 quality 文件都存在时发送。
 
+如果 ECS/VPS 没有 IPv6 default route，建议保持 `SMTP_FORCE_IPV4=true`，避免 DNS 返回 IPv6 SMTP 地址后触发 `[Errno 101] Network is unreachable`。SMTP 重试次数和间隔由 `SMTP_RETRIES`、`SMTP_RETRY_SECONDS` 控制。
+
 使用 `.env` 中的真实项目邮件配置测试发送：
 
 ```bash
@@ -93,6 +98,12 @@ python scripts/test_email.py
 
 ```bash
 python scripts/test_email.py --ignore-enabled
+```
+
+测试底层 SMTP 发送链路：
+
+```bash
+python -m scripts.test_smtp_delivery
 ```
 
 只测试本地 archive 通知：

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import smtplib
+import socket
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from email.message import EmailMessage
@@ -22,6 +24,9 @@ class EmailConfig:
     smtp_use_tls: bool
     sender: str
     recipients: tuple[str, ...]
+    smtp_force_ipv4: bool = True
+    smtp_retries: int = 3
+    smtp_retry_seconds: int = 5
     subject_prefix: str = "[api-report-agent]"
 
     @classmethod
@@ -38,6 +43,9 @@ class EmailConfig:
             smtp_username=env.get("SMTP_USERNAME", ""),
             smtp_password=env.get("SMTP_PASSWORD", ""),
             smtp_use_tls=env.get("SMTP_USE_TLS", "true").lower() == "true",
+            smtp_force_ipv4=env.get("SMTP_FORCE_IPV4", "true").lower() == "true",
+            smtp_retries=max(int(env.get("SMTP_RETRIES", "3") or "3"), 1),
+            smtp_retry_seconds=max(int(env.get("SMTP_RETRY_SECONDS", "5") or "5"), 0),
             sender=env.get("EMAIL_FROM", env.get("SMTP_USERNAME", "")),
             recipients=recipients,
             subject_prefix=env.get("EMAIL_SUBJECT_PREFIX", "[api-report-agent]"),
@@ -190,18 +198,70 @@ def compose_intraday_report_email(config: EmailConfig, payload: dict[str, Any], 
 
 
 def send_email(config: EmailConfig, message: EmailMessage) -> None:
+    last_error: BaseException | None = None
+    attempts = max(config.smtp_retries, 1)
+    for attempt in range(1, attempts + 1):
+        try:
+            targets = resolve_smtp_targets(config)
+        except Exception as exc:
+            last_error = exc
+            if attempt < attempts and config.smtp_retry_seconds:
+                time.sleep(config.smtp_retry_seconds)
+            continue
+        for target_index, target in enumerate(targets, start=1):
+            try:
+                send_email_once(config, message, target)
+                return
+            except Exception as exc:
+                last_error = exc
+                if target_index < len(targets):
+                    continue
+        if attempt < attempts and config.smtp_retry_seconds:
+            time.sleep(config.smtp_retry_seconds)
+
+    detail = str(last_error) if last_error else "unknown SMTP error"
+    raise RuntimeError(
+        "SMTP delivery failed "
+        f"host={config.smtp_host} port={config.smtp_port} "
+        f"force_ipv4={config.smtp_force_ipv4} attempts={attempts}: {detail}"
+    ) from last_error
+
+
+def resolve_smtp_targets(config: EmailConfig) -> list[str]:
+    if not config.smtp_force_ipv4:
+        return [config.smtp_host]
+
+    infos = socket.getaddrinfo(
+        config.smtp_host,
+        config.smtp_port,
+        family=socket.AF_INET,
+        type=socket.SOCK_STREAM,
+    )
+    targets = []
+    for info in infos:
+        address = info[4][0]
+        if address not in targets:
+            targets.append(address)
+    return targets or [config.smtp_host]
+
+
+def send_email_once(config: EmailConfig, message: EmailMessage, smtp_host: str) -> None:
     if config.smtp_use_tls:
-        with smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=30) as smtp:
+        with smtplib.SMTP(smtp_host, config.smtp_port, timeout=30) as smtp:
             smtp.starttls()
             if config.smtp_username or config.smtp_password:
                 smtp.login(config.smtp_username, config.smtp_password)
-            smtp.send_message(message)
+            refused = smtp.send_message(message)
+            if refused:
+                raise RuntimeError(f"SMTP refused recipients: {refused}")
         return
 
-    with smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=30) as smtp:
+    with smtplib.SMTP(smtp_host, config.smtp_port, timeout=30) as smtp:
         if config.smtp_username or config.smtp_password:
             smtp.login(config.smtp_username, config.smtp_password)
-        smtp.send_message(message)
+        refused = smtp.send_message(message)
+        if refused:
+            raise RuntimeError(f"SMTP refused recipients: {refused}")
 
 
 def build_daily_report_notification(

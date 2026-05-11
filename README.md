@@ -67,6 +67,9 @@ SMTP_PORT=587
 SMTP_USERNAME=
 SMTP_PASSWORD=
 SMTP_USE_TLS=true
+SMTP_FORCE_IPV4=true
+SMTP_RETRIES=3
+SMTP_RETRY_SECONDS=5
 EMAIL_FROM=
 EMAIL_TO=
 EMAIL_SUBJECT_PREFIX=[api-report-agent]
@@ -83,6 +86,8 @@ All project notifications go through `core.notification.notify()`. This project 
 
 Intraday email reports are sent during market hours every two hours by default, using only data collected in that two-hour window. Daily email reports are still sent after market close once daily metrics and quality files exist.
 
+On ECS/VPS hosts without an IPv6 default route, keep `SMTP_FORCE_IPV4=true`. This avoids DNS returning an IPv6 SMTP address that fails with `[Errno 101] Network is unreachable`. SMTP delivery retries are controlled by `SMTP_RETRIES` and `SMTP_RETRY_SECONDS`.
+
 Test the exact project email settings from `.env`:
 
 ```bash
@@ -93,6 +98,12 @@ The script uses the same `EmailConfig` and SMTP sender as the pipeline. It print
 
 ```bash
 python scripts/test_email.py --ignore-enabled
+```
+
+Test the raw SMTP delivery path:
+
+```bash
+python -m scripts.test_smtp_delivery
 ```
 
 Test archive notification only:

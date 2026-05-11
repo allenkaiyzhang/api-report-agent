@@ -268,6 +268,12 @@ def send_daily_report_after_close(
                 "payload": payload,
             },
         )
+        email_result = (result.get("results") or {}).get("email", {})
+        if email_result.get("status") != "ok":
+            error_text = str(email_result or {"status": "missing"})
+            state.mark_email_report_failed(market, trading_date, error_text)
+            logger.warning("daily notification email failed for %s %s: %s", market, trading_date, email_result)
+            return
         state.mark_email_report_sent(market, trading_date)
         logger.info("sent daily notification: %s %s results=%s", market, trading_date, result.get("results", {}))
     except Exception as exc:
@@ -293,8 +299,7 @@ def send_intraday_reports(
         if state.intraday_email_report_sent(key):
             continue
         if state.intraday_email_report_failed(key):
-            logger.info("skip intraday notification because previous send failed: %s", key)
-            continue
+            logger.info("retry intraday notification after previous failure: %s", key)
         if not (raw_file_path(BASE_DIR, market, trading_date).exists() and normalized_file_path(BASE_DIR, market, trading_date).exists()):
             logger.info("skip intraday notification because raw or normalized missing: %s", key)
             continue
@@ -323,6 +328,12 @@ def send_intraday_reports(
                     "payload": payload,
                 },
             )
+            email_result = (result.get("results") or {}).get("email", {})
+            if email_result.get("status") != "ok":
+                error_text = str(email_result or {"status": "missing"})
+                state.mark_intraday_email_report_failed(key, error_text)
+                logger.warning("intraday notification email failed for %s: %s", key, email_result)
+                continue
             state.mark_intraday_email_report_sent(key)
             logger.info("sent intraday notification: %s results=%s", key, result.get("results", {}))
         except Exception as exc:

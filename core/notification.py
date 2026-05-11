@@ -129,7 +129,10 @@ def send_email_notification(event: dict[str, Any]) -> dict[str, Any]:
     if attachments:
         attachment_text = "\n\nAttachments:\n" + "\n".join(f"- {item}" for item in attachments)
     message.set_content(str(event.get("body", "")) + attachment_text)
-    send_email(config, message)
+    try:
+        send_email(config, message)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
     return {"status": "ok", "recipients": list(config.recipients)}
 
 
