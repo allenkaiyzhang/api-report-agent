@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.market_client import MarketClient
-from core.extended_session import get_us_extended_window, should_collect_us_extended
+from core.extended_session import extended_collect_decision, get_us_extended_window
 from core.loader import load_symbols
 from core.runtime_support import setup_logger
 from core.time_model import iso_utc, market_timezone_name, normalize_source_timestamp
@@ -100,10 +100,24 @@ def append_extended_records(
 
 def collect_once(logger) -> Path | None:
     now = datetime.now(UTC)
-    if not should_collect_us_extended(now):
-        logger.info("skip extended collect because US regular session is open")
+    decision = extended_collect_decision(now)
+    if not decision["should_collect"]:
+        logger.info(
+            "skip extended collect: reason=%s utc=%s ny=%s session=%s",
+            decision["reason"],
+            decision["utc_time"],
+            decision["ny_time"],
+            decision["session"],
+        )
         return None
 
+    logger.info(
+        "collect extended quotes: reason=%s utc=%s ny=%s session=%s",
+        decision["reason"],
+        decision["utc_time"],
+        decision["ny_time"],
+        decision["session"],
+    )
     provider = os.getenv("MARKET_DATA_PROVIDER", "mock")
     client = MarketClient(provider=provider)
     symbols = extended_symbols()

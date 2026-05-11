@@ -6,12 +6,13 @@ import sys
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.time_model import normalize_source_timestamp
-from core.extended_session import should_collect_us_extended
+from core.extended_session import extended_collect_decision, should_collect_us_extended
 from scripts.extended_pipeline import append_extended_records
 
 
@@ -66,6 +67,22 @@ class TimeModelTest(unittest.TestCase):
         self.assertFalse(should_collect_us_extended(saturday_midday))
         self.assertFalse(should_collect_us_extended(sunday_midday))
         self.assertTrue(should_collect_us_extended(monday_premarket))
+
+    def test_extended_collect_decision_has_explicit_reasons(self) -> None:
+        et = ZoneInfo("America/New_York")
+        cases = [
+            (datetime(2026, 5, 11, 4, 30, tzinfo=et), True, "premarket", "premarket"),
+            (datetime(2026, 5, 11, 9, 45, tzinfo=et), False, "regular_session", "regular"),
+            (datetime(2026, 5, 11, 17, 0, tzinfo=et), True, "afterhours", "afterhours"),
+            (datetime(2026, 5, 11, 21, 0, tzinfo=et), False, "outside_extended_session", "closed"),
+            (datetime(2026, 5, 10, 23, 0, tzinfo=et), False, "weekend", "closed"),
+            (datetime(2026, 5, 11, 0, 30, tzinfo=et), False, "outside_extended_session", "closed"),
+        ]
+        for ny_time, should_collect, reason, session in cases:
+            decision = extended_collect_decision(ny_time)
+            self.assertEqual(decision["should_collect"], should_collect, decision)
+            self.assertEqual(decision["reason"], reason, decision)
+            self.assertEqual(decision["session"], session, decision)
 
 
 if __name__ == "__main__":
