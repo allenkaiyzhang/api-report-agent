@@ -271,11 +271,11 @@ class DataPipelineTest(unittest.TestCase):
     def test_us_longbridge_naive_timestamp_matches_new_york_window(self) -> None:
         raw_dir = self.base_dir / "data" / "raw" / "US"
         raw_dir.mkdir(parents=True, exist_ok=True)
-        raw_path = raw_dir / "2026-05-07.jsonl"
+        raw_path = raw_dir / "2026-05-11.jsonl"
         raw_path.write_text(
             json.dumps(
                 {
-                    "collected_at": "2026-05-07T23:21:00+08:00",
+                    "collected_at": "2026-05-11T21:33:00+08:00",
                     "provider": "longbridge",
                     "market": "US",
                     "symbol": "QQQ.US",
@@ -283,22 +283,22 @@ class DataPipelineTest(unittest.TestCase):
                     "previous_close": 445,
                     "volume": 1000,
                     "turnover": 450000,
-                    "timestamp": "2026-05-07 11:20:59",
+                    "timestamp": "2026-05-11 21:32:00",
                 }
             )
             + "\n",
             encoding="utf-8",
         )
 
-        normalize_day("US", "2026-05-07", base_dir=self.base_dir)
-        output_dir = metrics_day("US", "2026-05-07", base_dir=self.base_dir)
-        normalized_path = self.base_dir / "data" / "normalized" / "US" / "2026-05-07.jsonl"
+        normalize_day("US", "2026-05-11", base_dir=self.base_dir)
+        output_dir = metrics_day("US", "2026-05-11", base_dir=self.base_dir)
+        normalized_path = self.base_dir / "data" / "normalized" / "US" / "2026-05-11.jsonl"
         normalized = json.loads(normalized_path.read_text(encoding="utf-8").splitlines()[0])
-        metric = json.loads((output_dir / "window_1030_1130.json").read_text(encoding="utf-8"))
+        metric = json.loads((output_dir / "window_0930_1030.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(normalized["event_time"], "2026-05-07T15:20:59Z")
-        self.assertEqual(normalized["source_timestamp_raw"], "2026-05-07 11:20:59")
-        self.assertEqual(normalized["source_timestamp_utc"], "2026-05-07T15:20:59Z")
+        self.assertEqual(normalized["event_time"], "2026-05-11T13:32:00Z")
+        self.assertEqual(normalized["source_timestamp_raw"], "2026-05-11 21:32:00")
+        self.assertEqual(normalized["source_timestamp_utc"], "2026-05-11T13:32:00Z")
         self.assertEqual(normalized["market_timezone"], "America/New_York")
         self.assertEqual(normalized["symbol"], "QQQ.US")
         self.assertTrue(metric["symbols"])

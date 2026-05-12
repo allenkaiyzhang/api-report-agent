@@ -11,6 +11,7 @@ MARKET_TIMEZONE_NAMES = {
     "JP": "Asia/Tokyo",
     "EU": "Europe/London",
 }
+DEFAULT_PROVIDER_TIMESTAMP_TIMEZONE_NAME = "Asia/Shanghai"
 
 
 def normalize_market(value: Any) -> str:
@@ -26,6 +27,10 @@ def market_timezone_name(market: str) -> str:
 
 def market_timezone(market: str) -> ZoneInfo:
     return ZoneInfo(market_timezone_name(market))
+
+
+def provider_timestamp_timezone() -> ZoneInfo:
+    return ZoneInfo(DEFAULT_PROVIDER_TIMESTAMP_TIMEZONE_NAME)
 
 
 def utc_now() -> datetime:
@@ -79,7 +84,7 @@ def datetime_value_has_timezone(value: Any) -> bool:
 def normalize_source_timestamp(value: Any, market: str) -> tuple[str, str, str | None]:
     raw = "" if value is None else str(value)
     timezone_name = market_timezone_name(market)
-    parsed = parse_datetime(value, default_timezone=ZoneInfo(timezone_name))
+    parsed = parse_datetime(value, default_timezone=provider_timestamp_timezone())
     return raw, timezone_name, iso_utc(parsed) if parsed else None
 
 

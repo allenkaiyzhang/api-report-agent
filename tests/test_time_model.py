@@ -26,10 +26,17 @@ class TimeModelTest(unittest.TestCase):
         if self.output_dir.exists():
             shutil.rmtree(self.output_dir)
 
-    def test_longbridge_us_market_local_timestamp_normalizes_to_utc(self) -> None:
+    def test_longbridge_naive_timestamp_uses_provider_timezone(self) -> None:
         raw, timezone_name, source_utc = normalize_source_timestamp("2026-05-12 09:30:00", "US")
 
         self.assertEqual(raw, "2026-05-12 09:30:00")
+        self.assertEqual(timezone_name, "America/New_York")
+        self.assertEqual(source_utc, "2026-05-12T01:30:00Z")
+
+    def test_source_timestamp_with_offset_respects_original_offset(self) -> None:
+        raw, timezone_name, source_utc = normalize_source_timestamp("2026-05-12T09:30:00-04:00", "US")
+
+        self.assertEqual(raw, "2026-05-12T09:30:00-04:00")
         self.assertEqual(timezone_name, "America/New_York")
         self.assertEqual(source_utc, "2026-05-12T13:30:00Z")
 

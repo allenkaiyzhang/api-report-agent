@@ -24,6 +24,7 @@ from core.time_model import (
     market_timezone_name,
     normalize_source_timestamp,
     parse_datetime as parse_datetime_aware,
+    provider_timestamp_timezone,
 )
 
 
@@ -929,8 +930,10 @@ def record_belongs_to_window(record: dict[str, Any], window: MarketWindow) -> bo
     event_time = parse_datetime(record.get("event_time"))
     if event_time is None:
         return False
-    local_time = event_time.astimezone(window.start.tzinfo)
-    return window.start <= local_time < window.end
+    event_time_utc = event_time.astimezone(UTC)
+    window_start_utc = window.start.astimezone(UTC)
+    window_end_utc = window.end.astimezone(UTC)
+    return window_start_utc <= event_time_utc < window_end_utc
 
 
 def build_record_id(symbol: str, event_time: str | None) -> str:
@@ -1114,21 +1117,22 @@ def normalize_event_timestamp(raw_record: dict[str, Any], market: str) -> str | 
 
     event_time_value = raw_record.get("event_time")
     if event_time_value not in (None, ""):
-        parsed = parse_datetime(event_time_value, default_timezone=ZoneInfo(market_timezone_name(market)))
+        parsed = parse_datetime(event_time_value, default_timezone=provider_timestamp_timezone())
         if parsed is not None and datetime_value_has_timezone(event_time_value):
             return iso_utc(parsed)
         if parsed is not None and raw_record.get("timestamp") in (None, ""):
             return iso_utc(parsed)
 
     timestamp_value = raw_record.get("timestamp") or raw_record.get("quote_time")
-    parsed = parse_datetime(timestamp_value, default_timezone=ZoneInfo(market_timezone_name(market)))
-    if parsed is not None:
-        return iso_utc(parsed)
+    if timestamp_value not in (None, ""):
+        _, _, source_timestamp_utc = normalize_source_timestamp(timestamp_value, market)
+        if source_timestamp_utc:
+            return source_timestamp_utc
 
     if event_time_value not in (None, ""):
-        parsed = parse_datetime(event_time_value, default_timezone=ZoneInfo(market_timezone_name(market)))
-        if parsed is not None:
-            return iso_utc(parsed)
+        _, _, source_timestamp_utc = normalize_source_timestamp(event_time_value, market)
+        if source_timestamp_utc:
+            return source_timestamp_utc
     return None
 
 
