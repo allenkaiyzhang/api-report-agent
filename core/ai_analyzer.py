@@ -96,11 +96,19 @@ def mock_analysis(payload: dict[str, Any]) -> str:
 
 def build_analysis_prompt(payload: dict[str, Any]) -> str:
     compact_payload = compact_for_prompt(payload)
+    if "daily" in compact_payload and "current_day" not in compact_payload:
+        compact_payload["current_day"] = compact_payload["daily"]
+    history = compact_payload.get("history_context", {})
+    history_available = bool(isinstance(history, dict) and history.get("history_available"))
     return (
         "You are analyzing deterministic market data pipeline output. "
         "Do not invent data. Do not recalculate metrics beyond the supplied fields. "
-        "Summarize data quality, notable price/volume movement, risk signals, and any gaps. "
+        "For daily reports, analyze current_day together with history_context. "
+        "Use history_context only as compressed metrics history; never ask for or infer raw/normalized JSONL. "
+        "If history_context is missing or insufficient, explicitly say the historical context is insufficient. "
+        "Summarize data quality, notable price/volume movement, risk signals, historical trend, and any gaps. "
         "Answer in concise Chinese.\n\n"
+        f"History context available: {history_available}\n"
         f"Payload:\n{json.dumps(compact_payload, ensure_ascii=False, default=str)}"
     )
 
@@ -197,5 +205,6 @@ def compact_for_prompt(payload: dict[str, Any]) -> dict[str, Any]:
         "quality",
         "symbol_summary",
         "daily",
+        "history_context",
     ]
     return {key: payload[key] for key in keys if key in payload}

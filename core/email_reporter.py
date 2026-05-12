@@ -12,6 +12,7 @@ from typing import Any
 
 from core.ai_analyzer import AIAnalysisConfig, analyze_market_report
 from core.data_pipeline import load_jsonl, metrics_dir, normalized_file_path, parse_datetime, quality_file_path, raw_file_path
+from core.history_context import build_history_context
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ def build_daily_report_payload(base_dir: Path, market: str, trading_date: str) -
     daily = load_json(metrics_dir(base_dir, market, trading_date) / "daily.json")
     windows = load_json(metrics_dir(base_dir, market, trading_date) / "windows.json")
     quality = load_json(quality_file_path(base_dir, market, trading_date))
+    history_context = build_history_context(base_dir, market, trading_date)
 
     return {
         "report_type": "daily",
@@ -74,6 +76,7 @@ def build_daily_report_payload(base_dir: Path, market: str, trading_date: str) -
         "symbol_count": len(daily.get("symbols", [])),
         "quality": quality,
         "daily": daily,
+        "history_context": history_context,
     }
 
 
