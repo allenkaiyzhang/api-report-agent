@@ -74,7 +74,12 @@ jobs:
             set -e
             whoami
             cd /opt/api-report-agent
-            git pull --ff-only
+            if ! git pull --ff-only; then
+              echo "git pull failed, restoring tracked local code changes on deployment host and retrying..."
+              git restore --staged .
+              git restore .
+              git pull --ff-only
+            fi
             chmod +x scripts/deploy.sh scripts/smoke_test.sh scripts/tail_logs.sh
             scripts/deploy.sh
             scripts/smoke_test.sh
