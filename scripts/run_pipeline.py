@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from clients.market_client import MarketClient
 from core.ai_analyzer import AIAnalysisConfig
+from core.config_registry import DEFAULT_REGISTRY_PATH, apply_registry_to_env
 from core.email_reporter import EmailConfig, build_daily_report_notification, build_intraday_report_notification
 from core.loader import load_symbols
 from core.market_calendar import (
@@ -383,6 +384,7 @@ def build_session_metadata(collector_started_at: datetime | None) -> dict[str, o
 
 def main() -> None:
     load_dotenv(BASE_DIR / ".env")
+    apply_registry_to_env(override=True)
     logger = setup_logger("pipeline", "pipeline.log")
     setup_logger("collect", "collect.log")
     setup_logger("normalize", "normalize.log")
@@ -392,7 +394,10 @@ def main() -> None:
     state = RuntimeState()
     state.set_status("running")
 
-    symbols = [row["symbol"] for row in load_symbols(BASE_DIR / "config" / "symbols.json")]
+    symbols_path = BASE_DIR / "config" / "symbols.json"
+    if not symbols_path.exists():
+        symbols_path = DEFAULT_REGISTRY_PATH
+    symbols = [row["symbol"] for row in load_symbols(symbols_path)]
     provider = os.getenv("MARKET_DATA_PROVIDER", "longbridge")
     interval_seconds = int(os.getenv("DATA_COLLECTION_INTERVAL_SECONDS", "120"))
     force_rebuild = os.getenv("PIPELINE_FORCE_REBUILD", "false").lower() == "true"

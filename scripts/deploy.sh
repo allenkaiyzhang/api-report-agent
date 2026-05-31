@@ -21,6 +21,11 @@ if [[ ! -f "$PROJECT_ROOT/.env" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$PROJECT_ROOT/config/registry.yaml" ]]; then
+  echo "ERROR: $PROJECT_ROOT/config/registry.yaml is missing. Non-sensitive config must live in the registry." >&2
+  exit 1
+fi
+
 if [[ ! -f "$PROJECT_ROOT/requirements.txt" ]]; then
   echo "ERROR: $PROJECT_ROOT/requirements.txt is missing." >&2
   exit 1

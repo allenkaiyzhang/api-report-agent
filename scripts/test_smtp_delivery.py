@@ -12,11 +12,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.config_registry import apply_registry_to_env
 from core.email_reporter import EmailConfig, send_email
 
 
 def main() -> int:
     load_dotenv(PROJECT_ROOT / ".env")
+    apply_registry_to_env(override=True)
     config = EmailConfig.from_env(os.environ)
     if not config.enabled or not config.is_ready():
         print("SMTP config is not ready: check EMAIL_ENABLED, SMTP_HOST, EMAIL_FROM, EMAIL_TO", file=sys.stderr)

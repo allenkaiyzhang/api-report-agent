@@ -2,6 +2,8 @@
 
 English documentation: [README.md](README.md)
 
+配置约定：`config/registry.yaml` 是项目配置注册表，保存所有非敏感且容易重复的配置；`.env` 严格只保存 API token、数据源凭证、密码等敏感值。以后新增非敏感配置时，必须优先写入 `config/registry.yaml`，不要继续写入 `.env`。
+
 api-report-agent 是一个面向港股和美股市场数据的确定性数据管道。
 
 它不是 Agent 平台。pipeline 流程、数据采集、文件写入、metrics、quality 检查、replay 和市场日历逻辑都由确定性的 Python 代码实现。
@@ -30,7 +32,6 @@ python -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-cp config/symbols_example.json config/symbols.json
 ```
 
 Windows PowerShell 中使用下面的命令启用虚拟环境：
@@ -133,9 +134,9 @@ GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.5-flash
 ```
 
-使用 `AI_PROVIDER=mock` 可以在没有 API key 的情况下生成确定性的默认分析。配置 DeepSeek key 后可使用 `AI_PROVIDER=deepseek`。
+使用 `ai.provider: mock` 可以在没有 API key 的情况下生成确定性的默认分析。配置 DeepSeek key 后可使用 `ai.provider: deepseek`。
 
-在 `config/symbols.json` 中编辑需要关注的股票：
+在 `config/registry.yaml` 中编辑需要关注的股票：
 
 ```json
 {
@@ -196,9 +197,9 @@ python -m scripts.extended_report --market US --date 2026-05-12
 
 1. 将仓库 clone 或复制到服务器，例如 `/opt/api-report-agent`。
 2. 创建虚拟环境，并执行 `pip install -r requirements.txt` 安装依赖。
-3. 复制 `.env.example` 为 `.env`，配置 `MARKET_DATA_PROVIDER`、Longbridge 凭证、邮件和 AI。
-4. 复制 `config/symbols_example.json` 为 `config/symbols.json`，只保留需要采集的标的。
-5. 先用 `MARKET_DATA_PROVIDER=mock python scripts/run_pipeline.py` 做前台冒烟测试，确认至少完成一次循环后停止。
+3. 复制 `.env.example` 为 `.env`，只配置 Longbridge、SMTP、AI 等敏感凭证。
+4. 在 `config/registry.yaml` 中配置非敏感运行参数和需要采集的标的。
+5. 先用 `python scripts/run_pipeline.py` 做前台冒烟测试，确认至少完成一次循环后停止。
 6. 生产环境安装 pipeline 的 systemd 服务。
 7. 部署后持续观察 `logs/`、`runtime/pipeline_status.json` 和 `journalctl`。
 

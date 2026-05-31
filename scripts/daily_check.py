@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.config_registry import apply_registry_to_env
 from core.notification import notify
 
 
@@ -321,6 +322,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     load_dotenv(BASE_DIR / ".env")
+    apply_registry_to_env(override=True)
     args = parse_args()
     markets = [market.strip().upper() for market in args.markets.split(",") if market.strip()]
     report = run_daily_check(args.date, markets)

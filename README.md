@@ -21,7 +21,9 @@ systemd
 
 ## Configuration
 
-Copy `.env.example` to `.env` and set provider credentials when needed.
+Non-sensitive configuration lives in `config/registry.yaml`. This file is the project configuration registry and is safe to commit. It stores repeated operational settings such as provider selection, collection intervals, output paths, notification routing, email delivery options, AI model names, and watched symbols.
+
+`.env` is reserved for sensitive values only: API tokens, provider credentials, and passwords. Do not add non-sensitive runtime settings to `.env`; add them to `config/registry.yaml` and map them in `core/config_registry.py` if code needs an environment-compatible key during migration.
 
 Recommended first-time setup:
 
@@ -30,7 +32,6 @@ python -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-cp config/symbols_example.json config/symbols.json
 ```
 
 On Windows PowerShell, activate the virtual environment with:
@@ -39,13 +40,18 @@ On Windows PowerShell, activate the virtual environment with:
 .\.venv\Scripts\Activate.ps1
 ```
 
-```env
-MARKET_DATA_PROVIDER=mock
-DATA_COLLECTION_INTERVAL_SECONDS=120
-DATA_COLLECTION_OUTPUT_DIR=data/raw
-DATA_COLLECTION_FILE_TIMEZONE=Asia/Shanghai
-PIPELINE_LOOP_SLEEP_SECONDS=10
-PIPELINE_FORCE_REBUILD=false
+Registry example:
+
+```yaml
+market_data:
+  provider: mock
+  collection:
+    interval_seconds: 120
+    output_dir: data/raw
+
+pipeline:
+  loop_sleep_seconds: 10
+  force_rebuild: false
 ```
 
 Longbridge credentials:
@@ -58,28 +64,39 @@ LONGBRIDGE_ACCESS_TOKEN=your_access_token
 
 Email reports:
 
+```yaml
+email:
+  enabled: false
+  intraday_enabled: true
+  intraday_interval_hours: 2
+  smtp:
+    host: smtp.example.com
+    port: 587
+    username: report@example.com
+    use_tls: true
+    force_ipv4: true
+    retries: 3
+    retry_seconds: 5
+  from: report@example.com
+  to:
+    - ops@example.com
+  subject_prefix: "[api-report-agent]"
+```
+
+Only the SMTP password belongs in `.env`:
+
 ```env
-EMAIL_ENABLED=false
-EMAIL_INTRADAY_ENABLED=true
-EMAIL_INTRADAY_INTERVAL_HOURS=2
-SMTP_HOST=
-SMTP_PORT=587
-SMTP_USERNAME=
 SMTP_PASSWORD=
-SMTP_USE_TLS=true
-SMTP_FORCE_IPV4=true
-SMTP_RETRIES=3
-SMTP_RETRY_SECONDS=5
-EMAIL_FROM=
-EMAIL_TO=
-EMAIL_SUBJECT_PREFIX=[api-report-agent]
 ```
 
 Notifications:
 
-```env
-NOTIFY_CHANNELS=email,archive
-NOTIFICATION_ARCHIVE_DIR=/opt/api-report-agent/data/notifications
+```yaml
+notifications:
+  channels:
+    - email
+    - archive
+  archive_dir: /opt/api-report-agent/data/notifications
 ```
 
 All project notifications go through `core.notification.notify()`. This project only supports `email` and local `archive`; if `telegram` appears in `NOTIFY_CHANNELS`, it is ignored and never called from api-report-agent. Telegram delivery should be handled by the separate `tg_schedule_bot` host by pulling the notification archive over SSH.
@@ -121,39 +138,44 @@ scripts/notifications_tail.sh 100
 
 Optional AI analysis can be included in email reports. AI is only used for report summarization and never controls collection, scheduling, metrics, or quality logic.
 
+```yaml
+ai:
+  analysis_enabled: false
+  provider: mock
+  fallback_provider: gemini
+  timeout_seconds: 30
+  deepseek:
+    base_url: https://api.deepseek.com
+    model: deepseek-v4-flash
+  gemini:
+    model: gemini-2.5-flash
+```
+
+Only AI provider keys belong in `.env`:
+
 ```env
-AI_ANALYSIS_ENABLED=false
-AI_PROVIDER=mock
-AI_FALLBACK_PROVIDER=gemini
-AI_TIMEOUT_SECONDS=30
 DEEPSEEK_API_KEY=
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-v4-flash
 GEMINI_API_KEY=
-GEMINI_MODEL=gemini-2.5-flash
 ```
 
-Use `AI_PROVIDER=mock` to include a deterministic default analysis without any API key. Use `AI_PROVIDER=deepseek` when a DeepSeek key is configured.
+Use `ai.provider: mock` to include a deterministic default analysis without any API key. Use `ai.provider: deepseek` when a DeepSeek key is configured.
 
-Edit watched symbols in `config/symbols.json`:
+Edit watched symbols in `config/registry.yaml`:
 
-```json
-{
-  "symbols": [
-    {
-      "symbol": "QQQ.US",
-      "market": "US",
-      "asset_type": "equity_etf",
-      "liquidity_class": "high",
-      "include_in_movers": true,
-      "sessions": ["regular", "extended"],
-      "enabled": true
-    }
-  ]
-}
+```yaml
+symbols:
+  - symbol: QQQ.US
+    market: US
+    asset_type: equity_etf
+    liquidity_class: high
+    include_in_movers: true
+    sessions:
+      - regular
+      - extended
+    enabled: true
 ```
 
-Old `symbol` + `enabled` entries remain supported. The extended fields let the service separate regular and extended-session behavior without moving to a database.
+Old `config/symbols.json` files remain supported as a compatibility fallback, but new non-sensitive settings should go into `config/registry.yaml`. The extended symbol fields let the service separate regular and extended-session behavior without moving to a database.
 
 ## Run
 
@@ -228,7 +250,6 @@ sudo chown -R deploy:deploy /opt/api-report-agent
 cd /opt/api-report-agent
 git clone <repo-url> .
 cp .env.example .env
-cp config/symbols_example.json config/symbols.json
 chmod +x scripts/deploy.sh scripts/smoke_test.sh scripts/tail_logs.sh
 scripts/deploy.sh
 scripts/smoke_test.sh
@@ -368,9 +389,9 @@ Example:
 ```text
 clients/
   market_client.py
-  symbols.json
 
 core/
+  config_registry.py
   data_pipeline.py
   loader.py
   market_calendar.py

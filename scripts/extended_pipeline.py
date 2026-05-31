@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.market_client import MarketClient
+from core.config_registry import DEFAULT_REGISTRY_PATH, apply_registry_to_env
 from core.extended_session import extended_collect_decision, get_us_extended_window
 from core.loader import load_symbols
 from core.runtime_support import setup_logger
@@ -35,6 +36,8 @@ def parse_args() -> argparse.Namespace:
 
 def extended_symbols() -> list[str]:
     path = PROJECT_ROOT / "config" / "symbols.json"
+    if not path.exists():
+        path = DEFAULT_REGISTRY_PATH
     if not path.exists():
         return DEFAULT_EXTENDED_SYMBOLS
 
@@ -133,6 +136,7 @@ def collect_once(logger) -> Path | None:
 def main() -> None:
     args = parse_args()
     load_dotenv(PROJECT_ROOT / ".env")
+    apply_registry_to_env(override=True)
     logger = setup_logger("extended_pipeline", "extended_pipeline.log")
 
     while True:

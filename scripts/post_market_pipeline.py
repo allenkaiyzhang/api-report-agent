@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.ai_analyzer import AIAnalysisConfig
+from core.config_registry import apply_registry_to_env
 from core.data_pipeline import BASE_DIR, daily_day, metrics_day, normalize_day, quality_day
 from core.post_market.ai_narrative import generate_ai_narrative
 from core.post_market.archive import archive_raw
@@ -54,6 +55,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     load_dotenv(BASE_DIR / ".env")
+    apply_registry_to_env(override=True)
     args = parse_args()
     outputs = run_post_market_pipeline(args.market, args.date)
     for name, path in outputs.items():

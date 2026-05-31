@@ -1,0 +1,91 @@
+service:
+  host: 127.0.0.1
+  port: 8000
+  log_level: INFO
+  database_url: sqlite:////opt/api-report-agent/data/api-report-agent.db
+  data_dir: /opt/api-report-agent/data
+  python_unbuffered: "1"
+
+market_data:
+  provider: mock
+  collection:
+    interval_seconds: 120
+    output_dir: data/raw
+    file_timezone: Asia/Shanghai
+  extended_collection:
+    interval_seconds: 1800
+
+pipeline:
+  loop_sleep_seconds: 10
+  force_rebuild: false
+  reference_force_rebuild: false
+  reference_build_on_market_open: true
+
+notifications:
+  channels:
+    - email
+    - archive
+  archive_dir: /opt/api-report-agent/data/notifications
+
+email:
+  enabled: false
+  intraday_enabled: true
+  intraday_interval_hours: 2
+  smtp:
+    host: ""
+    port: 587
+    username: ""
+    use_tls: true
+    force_ipv4: true
+    retries: 3
+    retry_seconds: 5
+  from: ""
+  to: []
+  subject_prefix: "[api-report-agent]"
+  daily_check_enabled: false
+
+ai:
+  analysis_enabled: false
+  provider: mock
+  fallback_provider: gemini
+  timeout_seconds: 30
+  deepseek:
+    base_url: https://api.deepseek.com
+    model: deepseek-v4-flash
+  gemini:
+    model: gemini-2.5-flash
+
+symbols:
+  - symbol: QQQ.US
+    market: US
+    asset_type: equity_etf
+    liquidity_class: high
+    include_in_movers: true
+    sessions:
+      - regular
+      - extended
+    enabled: true
+  - symbol: SGOV.US
+    market: US
+    asset_type: treasury_etf
+    liquidity_class: reference
+    include_in_movers: false
+    sessions:
+      - regular
+    enabled: true
+  - symbol: HSBC.US
+    market: US
+    asset_type: equity
+    liquidity_class: medium
+    include_in_movers: true
+    sessions:
+      - regular
+    enabled: true
+  - symbol: VIX
+    market: US
+    asset_type: index
+    liquidity_class: reference
+    include_in_movers: false
+    sessions:
+      - regular
+    enabled: true

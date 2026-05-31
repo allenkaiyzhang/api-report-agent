@@ -50,6 +50,30 @@ class LoaderTest(unittest.TestCase):
 
         self.assertEqual([row["symbol"] for row in rows], ["QQQ.US", "0700.HK"])
 
+    def test_load_symbols_from_registry_yaml(self) -> None:
+        path = self.tmp_dir / "registry.yaml"
+        path.write_text(
+            "\n".join(
+                [
+                    "symbols:",
+                    "  - symbol: QQQ.US",
+                    "    market: US",
+                    "    sessions:",
+                    "      - regular",
+                    "      - extended",
+                    "    enabled: true",
+                    "  - symbol: DISABLED.US",
+                    "    enabled: false",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        rows = load_symbols(path)
+
+        self.assertEqual([row["symbol"] for row in rows], ["QQQ.US"])
+        self.assertEqual(rows[0]["sessions"], ["regular", "extended"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.config_registry import apply_registry_to_env
 from core.email_reporter import EmailConfig
 from core.notification import notify
 
@@ -98,6 +99,7 @@ def main() -> int:
         return 2
 
     load_dotenv(env_path)
+    apply_registry_to_env(override=True)
     config = EmailConfig.from_env(os.environ)
     print("Using email config:")
     print(masked_config_summary(config))

@@ -4,13 +4,17 @@ import json
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 def load_symbols(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         raise FileNotFoundError(f"Symbols file not found: {path}")
 
+    if path.suffix.lower() in {".yaml", ".yml"}:
+        return load_symbols_yaml(path)
     if path.suffix.lower() != ".json":
-        raise ValueError(f"Symbols file must be JSON: {path}")
+        raise ValueError(f"Symbols file must be JSON or YAML: {path}")
     return load_symbols_json(path)
 
 
@@ -20,13 +24,25 @@ def load_symbols_json(path: Path) -> list[dict[str, Any]]:
     except json.JSONDecodeError as exc:
         raise ValueError(f"Symbols JSON is invalid: {path}") from exc
 
+    return normalize_symbol_rows(data, "Symbols JSON must contain a list or an object with a symbols list")
+
+
+def load_symbols_yaml(path: Path) -> list[dict[str, Any]]:
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Symbols YAML is invalid: {path}") from exc
+    return normalize_symbol_rows(data, "Symbols YAML must contain a list or an object with a symbols list")
+
+
+def normalize_symbol_rows(data: Any, error_message: str) -> list[dict[str, Any]]:
     if isinstance(data, dict):
         rows = data.get("symbols")
     else:
         rows = data
 
     if not isinstance(rows, list):
-        raise ValueError("Symbols JSON must contain a list or an object with a symbols list")
+        raise ValueError(error_message)
 
     symbols: list[dict[str, Any]] = []
     for item in rows:

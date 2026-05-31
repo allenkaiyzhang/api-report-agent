@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.ai_analyzer import AIAnalysisConfig, analyze_market_report
+from core.config_registry import apply_registry_to_env
 from core.extended_session import get_us_extended_window
 from core.runtime_support import setup_logger
 from core.time_model import iso_utc
@@ -167,6 +168,7 @@ def to_int(value: Any) -> int:
 def main() -> None:
     args = parse_args()
     load_dotenv(PROJECT_ROOT / ".env")
+    apply_registry_to_env(override=True)
     logger = setup_logger("extended_report", "extended_report.log")
     trading_date = args.date or get_us_extended_window(datetime.now(UTC)).trading_date
     if not args.force and not extended_window_has_ended(trading_date):
