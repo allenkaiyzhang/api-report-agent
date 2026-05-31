@@ -214,6 +214,53 @@ python -m scripts.extended_report --market US --date 2026-05-12
 
 Extended records are written to `data/raw/US/extended/{session_window_id}.jsonl` and reports are written to `data/reports/extended/`. Weekend collection is skipped; the weekend extended window only collects Friday after-hours and Monday premarket. Extended quality rules are isolated from regular daily reports. See [docs/extended_session.md](docs/extended_session.md).
 
+## External API
+
+The FastAPI service exposes a small operational API for health, runtime status, one-shot collection, post-market report generation, daily rebuilds, symbol inspection, and report retrieval.
+
+`GET /health` is public and dependency-light. All other endpoints require:
+
+```http
+Authorization: Bearer <API_TOKEN>
+```
+
+`API_TOKEN` or `API_KEY` must be set in `.env`; these secrets must not be stored in `config/registry.yaml`.
+
+Endpoints:
+
+- `GET /health` returns service liveness.
+- `GET /status` returns pipeline health plus `runtime/pipeline_status.json`.
+- `GET /symbols` returns the effective watched symbols from `config/symbols.json` if present, otherwise `config/registry.yaml`.
+- `POST /collect/run` triggers one collection cycle for currently open markets.
+- `POST /pipeline/daily/run` rebuilds normalized data, metrics, daily metrics, and quality for one market/date.
+- `POST /reports/post-market/run` runs the full post-market report pipeline for one market/date.
+- `GET /reports` lists generated report artifacts. Optional query params: `market=US|HK`, `trading_date=YYYY-MM-DD`.
+- `GET /reports/{market}/{trading_date}/{report_type}` returns one report payload. Supported `report_type` values are `market_summary`, `timeline`, `ai_summary`, `health`, `features`, `daily_metrics`, `windows_metrics`, and `quality`.
+
+Examples:
+
+```bash
+curl -fsS http://127.0.0.1:8000/health
+
+curl -fsS -H "Authorization: Bearer $API_TOKEN" \
+  http://127.0.0.1:8000/status
+
+curl -fsS -X POST -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"mock","symbols":["QQQ.US"]}' \
+  http://127.0.0.1:8000/collect/run
+
+curl -fsS -X POST -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"market":"US","trading_date":"2026-05-08"}' \
+  http://127.0.0.1:8000/reports/post-market/run
+
+curl -fsS -H "Authorization: Bearer $API_TOKEN" \
+  http://127.0.0.1:8000/reports/US/2026-05-08/market_summary
+```
+
+Trigger endpoints execute synchronously and return actual output paths. They do not create placeholder success records when source data is missing.
+
 ## ECS Deployment
 
 Production ECS deployment uses the repository path `/opt/api-report-agent`, service name `api-report-agent`, runtime user `deploy`, and a local-only API bind at `127.0.0.1:8000`. Public ingress should be handled by Nginx or another gateway.
