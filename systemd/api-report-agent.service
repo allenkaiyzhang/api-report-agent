@@ -1,0 +1,19 @@
+[Unit]
+Description=API Report Agent
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/api-report-agent
+EnvironmentFile=/opt/api-report-agent/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/api-report-agent/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+User=deploy
+Group=deploy
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

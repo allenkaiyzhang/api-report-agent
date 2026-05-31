@@ -192,33 +192,105 @@ python -m scripts.extended_report --market US --date 2026-05-12
 
 Extended records are written to `data/raw/US/extended/{session_window_id}.jsonl` and reports are written to `data/reports/extended/`. Weekend collection is skipped; the weekend extended window only collects Friday after-hours and Monday premarket. Extended quality rules are isolated from regular daily reports. See [docs/extended_session.md](docs/extended_session.md).
 
-## Deployment
+## ECS Deployment
 
-1. Clone or copy the repository to the server, for example `/opt/api-report-agent`.
-2. Create a virtual environment and install dependencies with `pip install -r requirements.txt`.
-3. Copy `.env.example` to `.env`, then set `MARKET_DATA_PROVIDER`, Longbridge credentials, email settings, and AI settings.
-4. Copy `config/symbols_example.json` to `config/symbols.json` and keep only the symbols you want to collect.
-5. Run a foreground smoke test with `MARKET_DATA_PROVIDER=mock python scripts/run_pipeline.py`; stop it after one successful loop.
-6. Install the systemd unit for the pipeline.
-7. Monitor `logs/`, `runtime/pipeline_status.json`, and `journalctl` after deployment.
+Production ECS deployment uses the repository path `/opt/api-report-agent`, service name `api-report-agent`, runtime user `deploy`, and a local-only API bind at `127.0.0.1:8000`. Public ingress should be handled by Nginx or another gateway.
 
-Minimal pipeline systemd unit:
+The ASGI entrypoint is:
+
+```text
+app.main:app
+```
+
+The health endpoint is dependency-light and does not call Longbridge, DeepSeek, OpenAI, Gemini, upload jobs, or report parsing:
+
+```bash
+curl -fsS http://127.0.0.1:8000/health
+```
+
+Expected response:
+
+```json
+{"status":"ok","service":"api-report-agent"}
+```
+
+The systemd unit is stored at `systemd/api-report-agent.service` and uses:
 
 ```ini
-[Unit]
-Description=api-report-agent market data pipeline
-After=network.target
-
-[Service]
-WorkingDirectory=/opt/api-report-agent
-EnvironmentFile=/opt/api-report-agent/.env
-ExecStart=/opt/api-report-agent/.venv/bin/python scripts/run_pipeline.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
+ExecStart=/opt/api-report-agent/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
+
+Manual first-time setup on ECS:
+
+```bash
+sudo mkdir -p /opt/api-report-agent
+sudo chown -R deploy:deploy /opt/api-report-agent
+cd /opt/api-report-agent
+git clone <repo-url> .
+cp .env.example .env
+cp config/symbols_example.json config/symbols.json
+chmod +x scripts/deploy.sh scripts/smoke_test.sh scripts/tail_logs.sh
+scripts/deploy.sh
+scripts/smoke_test.sh
+```
+
+`scripts/deploy.sh` creates or repairs `.venv`, installs dependencies with `.venv/bin/python -m pip`, copies the systemd unit, restarts through `systemctl`, prints service status, and exits. It never starts `uvicorn` or Python in the foreground.
+
+GitHub Actions deployment is manual only through `.github/workflows/deploy.yml`. Configure these repository secrets:
+
+```text
+ECS_HOST
+ECS_USER
+ECS_SSH_KEY
+ECS_PORT
+```
+
+Do not configure legacy VPS-prefixed deployment secrets in this repository. `ECS_SSH_KEY` is the private SSH key GitHub Actions uses to log into the ECS host as `deploy`; it is separate from any Git deploy key used by the ECS server to pull the repository.
+
+Manual redeploy on ECS:
+
+```bash
+cd /opt/api-report-agent
+git pull --ff-only
+chmod +x scripts/deploy.sh scripts/smoke_test.sh scripts/tail_logs.sh
+scripts/deploy.sh
+scripts/smoke_test.sh
+```
+
+Systemd management:
+
+```bash
+sudo systemctl status api-report-agent --no-pager --full
+sudo systemctl restart api-report-agent
+sudo systemctl stop api-report-agent
+sudo systemctl enable api-report-agent
+```
+
+Logs:
+
+```bash
+scripts/tail_logs.sh
+LINES=300 scripts/tail_logs.sh
+sudo journalctl -u api-report-agent -n 120 --no-pager
+tail -n 120 /opt/api-report-agent/deploy.log
+```
+
+Troubleshooting broken virtualenv:
+
+```bash
+cd /opt/api-report-agent
+rm -rf .venv
+scripts/deploy.sh
+```
+
+The deploy script only removes `.venv` when it is missing or not executable, or when you remove it manually. It does not delete `data/`, `logs/`, database files, or user generated content.
+
+Troubleshooting SSH handshake failures in GitHub Actions:
+
+- Verify `ECS_HOST`, `ECS_USER`, `ECS_SSH_KEY`, and `ECS_PORT` are set on the GitHub repository.
+- Confirm `ECS_SSH_KEY` matches a public key in `/home/deploy/.ssh/authorized_keys` on the ECS host.
+- Confirm the ECS security group allows inbound SSH on `ECS_PORT` from GitHub Actions runners or your approved source range.
+- Confirm the remote user is `deploy` and the workflow does not switch users after login.
 
 Optional post-market cron examples:
 
@@ -229,27 +301,19 @@ Optional post-market cron examples:
 
 Adjust cron times to the server timezone and the target market close.
 
-## Redeploy
-
-Use the bundled redeploy script on ECS:
-
-```bash
-chmod +x redeploy.sh
-sudo ./redeploy.sh
-```
-
-The script runs in `/opt/api-report-agent`, checks `.env`, creates `.venv` if missing, installs `requirements.txt`, runs `systemctl daemon-reload`, restarts `api-report-agent`, prints service status, and appends output to `/opt/api-report-agent/deploy.log`.
-
 ## Simple QA
 
 Run the automated test suite before deployment:
 
 ```bash
-python -m unittest discover tests
+python -m pytest -q
 ```
 
 Useful manual checks:
 
+- `python -m compileall .` should complete without syntax errors.
+- `uvicorn app.main:app --host 127.0.0.1 --port 8000` should expose `GET /health` locally during development.
+- `scripts/smoke_test.sh` should print `PASS` against a running service.
 - `python scripts/healthcheck.py` should complete without unexpected errors.
 - `python scripts/test_email.py --ignore-enabled` should send a test email when SMTP settings are configured.
 - `python scripts/post_market_pipeline.py --market US --date YYYY-MM-DD` should generate reports for a date with raw data.

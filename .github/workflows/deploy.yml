@@ -1,0 +1,25 @@
+name: Deploy to ECS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.ECS_HOST }}
+          username: ${{ secrets.ECS_USER }}
+          key: ${{ secrets.ECS_SSH_KEY }}
+          port: ${{ secrets.ECS_PORT }}
+          script: |
+            set -e
+            whoami
+            cd /opt/api-report-agent
+            git pull --ff-only
+            chmod +x scripts/deploy.sh scripts/smoke_test.sh scripts/tail_logs.sh
+            scripts/deploy.sh
+            scripts/smoke_test.sh
