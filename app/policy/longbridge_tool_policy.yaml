@@ -1,0 +1,60 @@
+# Longbridge MCP Tool Policy Configuration
+# This file defines which tools are allowed, blocked, or require explicit config.
+# The code-level policy in tool_policy.py is authoritative; this YAML is for documentation.
+
+longbridge_tool_policy:
+  version: 2
+
+  # Default-deny: unknown tools are blocked unless explicitly allowed
+  default_deny_unknown: true
+
+  # Trading/write tools — PERMANENTLY BLOCKED in code
+  trading_blocked:
+    - submit_order
+    - replace_order
+    - cancel_order
+    - withdrawals
+    - dca_create
+    - dca_update
+    - dca_stop
+    - dca_pause
+    - dca_resume
+    - alert_add
+    - alert_delete
+    - create_watchlist_group
+    - delete_watchlist_group
+    - sharelist_add
+    - sharelist_create
+    - sharelist_delete
+    - sharelist_remove
+
+  # Account-read tools — disabled by default
+  account_read_disabled_by_default:
+    - account_balance
+    - stock_positions
+    - today_orders
+    - history_orders
+    - today_executions
+    - history_executions
+    - statement_list
+
+  # Allowed read-only market/fundamental tools
+  allowed_market_tools:
+    - candlesticks          # Official Longbridge MCP name
+    - trading_session       # Official Longbridge MCP name
+    - get_stock_info        # Fundamental data
+    - get_calc_indexes      # Index calculations
+    - get_watchlist         # Watchlist management (read-only)
+    - get_option_chain      # Options chain (read-only)
+    - get_option_snapshot   # Options snapshot (read-only)
+    - get_option_underlying_info
+    - get_option_expiration_date
+
+  # Internal operation → official MCP tool name mapping
+  # Updated at runtime via MCP tool discovery
+  tool_mapping:
+    quote: get_stock_quote
+    candles: candlesticks
+    market_status: trading_session
+    intraday: get_intraday
+    fundamentals: get_stock_info

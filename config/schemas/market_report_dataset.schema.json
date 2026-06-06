@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-report-agent/schemas/market_report_dataset.json",
+  "title": "MarketReportDataset",
+  "description": "Aggregated dataset for report generation after collection, cleaning, and validation.",
+  "type": "object",
+  "required": ["run_id", "report_type", "market", "symbols", "collected_at", "validated"],
+  "properties": {
+    "run_id": {"type": "string", "minLength": 1},
+    "report_type": {"type": "string", "enum": ["intraday_brief", "daily_close_report", "event_alert"]},
+    "market": {"type": "string", "enum": ["US", "HK"]},
+    "symbols": {"type": "array", "items": {"type": "string"}},
+    "quotes": {"type": "array", "items": {"type": "object"}},
+    "candles": {"type": "array", "items": {"type": "object"}},
+    "intraday": {"type": "array", "items": {"type": "object"}},
+    "market_status": {
+      "type": "object",
+      "properties": {
+        "market": {"type": "string"},
+        "is_open": {"type": "boolean"},
+        "session": {"type": "string"}
+      }
+    },
+    "fundamentals": {"type": "array", "items": {"type": "object"}},
+    "collected_at": {"type": "string", "format": "date-time"},
+    "validated": {"type": "boolean"},
+    "validation_errors": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}

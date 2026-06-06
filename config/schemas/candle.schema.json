@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-report-agent/schemas/candle.json",
+  "title": "Candle",
+  "description": "A single OHLCV candlestick data point.",
+  "type": "object",
+  "required": ["symbol", "market", "close", "open", "high", "low", "timestamp"],
+  "properties": {
+    "symbol": {"type": "string", "minLength": 1},
+    "market": {"type": "string", "enum": ["US", "HK"]},
+    "close": {"type": "number", "minimum": 0},
+    "open": {"type": "number", "minimum": 0},
+    "high": {"type": "number", "minimum": 0},
+    "low": {"type": "number", "minimum": 0},
+    "volume": {"type": "integer", "minimum": 0},
+    "turnover": {"type": "number", "minimum": 0},
+    "timestamp": {"type": "string"},
+    "trade_session": {"type": "string"},
+    "source": {"type": "string"}
+  },
+  "additionalProperties": false
+}

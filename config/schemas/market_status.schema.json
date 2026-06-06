@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-report-agent/schemas/market_status.json",
+  "title": "MarketStatus",
+  "description": "Market open/close status and session information.",
+  "type": "object",
+  "required": ["market", "is_open", "session"],
+  "properties": {
+    "market": {"type": "string", "enum": ["US", "HK"]},
+    "is_open": {"type": "boolean"},
+    "session": {"type": "string", "enum": ["regular", "extended_pre", "extended_post", "lunch", "closed", "holiday"]},
+    "next_open": {"type": "string"},
+    "next_close": {"type": "string"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "source": {"type": "string"}
+  },
+  "additionalProperties": false
+}

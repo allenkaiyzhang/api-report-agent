@@ -19,6 +19,250 @@ systemd
   -> data/quality
 ```
 
+## Market Report Agent (MCP)
+
+The Market Report Agent is a workflow built on the Longbridge official Remote MCP protocol.
+
+```
+Longbridge MCP data collection → data cleaning → periodic intraday analysis
+(every 2h during market hours) → post-market daily summary → report generation
+→ Email / Notification dispatch
+```
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────┐
+│              MarketDataClient                │
+│              (Abstract Interface)            │
+├─────────────────────────────────────────────┤
+│  LongbridgeMcpClient  │ MockMarketDataClient│
+│  (Remote MCP adapter) │ (Smoke test mock)   │
+└─────────────────────────────────────────────┘
+                      │
+         ┌────────────┼────────────┐
+         ▼            ▼            ▼
+    McpCollector  McpCleaner  McpValidator
+         │            │            │
+         ▼            ▼            ▼
+    data/raw/    data/clean/   (schema check)
+                      │
+         ┌────────────┼────────────┐
+         ▼            ▼            ▼
+    McpScheduler  ReportGenerator  McpNotifier
+         │            │            │
+         ▼            ▼            ▼
+    reports/     reports/       logs/
+    YYYY-MM-DD/  YYYY-MM-DD/    notifications/
+```
+
+### Longbridge MCP Setup
+
+1. Obtain Longbridge OAuth 2.1 token from Longbridge Open Platform.
+   Reference: https://open.longbridge.com/docs/mcp
+2. Set environment variables in `.env`:
+
+```env
+MARKET_DATA_PROVIDER=longbridge_mcp
+LONGBRIDGE_MCP_URL=https://mcp.longbridge.com
+LONGBRIDGE_MCP_OAUTH_TOKEN=your_oauth_token
+```
+
+3. Configure `config/config.yaml`:
+
+```yaml
+longbridge_mcp:
+  endpoint: ""
+
+security:
+  account_read_enabled: false
+  trading_enabled: false
+
+markets:
+  - market: US
+    timezone: America/New_York
+    regular_open: "09:30"
+    regular_close: "16:00"
+  - market: HK
+    timezone: Asia/Hong_Kong
+    regular_open: "09:30"
+    regular_close: "16:00"
+
+schedule:
+  tick_seconds: 60
+  intraday_interval_hours: 2
+  post_market_delay_minutes: 15
+```
+
+4. Set `MARKET_DATA_PROVIDER=longbridge_mcp` to use the MCP adapter, or `mock` for smoke tests.
+
+### OAuth / Session Notes
+
+- The Longbridge official MCP uses OAuth 2.1 client authorization.
+- Set `LONGBRIDGE_MCP_OAUTH_TOKEN` in `.env` (never commit tokens).
+- The token is NOT the same as legacy Longbridge OpenAPI credentials.
+- If using the `longbridge_mcp` provider without a valid token, health check and all data calls will fail with a clear error.
+- Mock provider never requires OAuth — use for smoke testing only.
+
+### Provider Selection
+
+Provider precedence (first match wins):
+1. `--provider` CLI argument
+2. `MARKET_DATA_PROVIDER` environment variable
+3. `provider` field in `config/config.yaml`
+4. `APP_ENV=test` → defaults to `mock`
+5. Otherwise → fails with error (no silent fallback to mock)
+
+Valid providers:
+- `mock` — deterministic mock for smoke tests (explicit or `APP_ENV=test` only)
+- `longbridge_mcp` — production Longbridge Remote MCP adapter
+
+### Local Run
+
+```bash
+# Single collection + intraday report
+python scripts/market_report_agent.py --once
+
+# With mock data (no credentials needed)
+python scripts/market_report_agent.py --once --provider mock
+
+# Run the scheduler (continuous loop)
+python scripts/market_report_agent.py
+
+# Health check
+python scripts/market_report_agent.py --health
+
+# Filter by market
+python scripts/market_report_agent.py --once --market US
+```
+
+### Config
+
+See `config/config.example.yaml` for all settings:
+
+| Section | Purpose |
+|---------|---------|
+| `longbridge_mcp` | MCP endpoint URL (token in `.env`) |
+| `security` | `account_read_enabled`, `trading_enabled` (always blocked in code) |
+| `symbols` | Watchlist with market, asset type, session config |
+| `markets` | Timezone, trading hours per market |
+| `schedule` | Tick interval, intraday interval, post-market delay |
+| `data_pipeline` | Raw/clean output dirs, validation flags |
+| `report_thresholds` | Price change% and volume spike thresholds |
+| `notifications` | Email, webhook, archive channels |
+| `reports` | Base directory, retention, format |
+| `run_logs` | JSONL path and max entries |
+| `observability` | Structured log paths |
+
+### Report Types
+
+| Type | When | Format | Delivery |
+|------|------|--------|----------|
+| `intraday_brief` | Every 2h during market hours | Short Markdown | Notification-first |
+| `daily_close_report` | After market close | Full Markdown | Email + notification |
+| `event_alert` | Price ≥3% or volume ≥3x avg | Short alert | Immediate notification |
+
+### Security Notes
+
+**Tool Policy (enforced in code, not just documentation):**
+
+Trading/write tools — permanently blocked:
+`submit_order`, `replace_order`, `cancel_order`, `withdrawals`,
+`dca_create`, `dca_update`, `dca_stop`, `dca_pause`, `dca_resume`,
+`alert_add`, `alert_delete`, `create_watchlist_group`, `delete_watchlist_group`,
+`sharelist_add`, `sharelist_create`, `sharelist_delete`, `sharelist_remove`
+
+Account-read tools — disabled by default (requires `ACCOUNT_READ_ENABLED=true`):
+`account_balance`, `stock_positions`, `today_orders`, `history_orders`,
+`today_executions`, `history_executions`, `statement_list`
+
+Allowed market tools (read-only):
+`candlesticks`, `trading_session`, `get_stock_info`, `get_calc_indexes`,
+`get_watchlist`, `get_option_chain`, `get_option_snapshot`,
+`get_option_underlying_info`, `get_option_expiration_date`
+
+**Default-deny for unknown tools:** Any Longbridge MCP tool not explicitly allowed
+is blocked by default. No new tool can be called without updating the policy.
+
+- Trading tools are permanently blocked in code (not just prompts).
+- Account-read tools disabled by default — requires `ACCOUNT_READ_ENABLED=true`.
+- Default mode is read-only market and fundamental data only.
+- Credentials stored in `.env`, never committed to the repository.
+- No Longbridge credentials or OAuth tokens in source code or config files.
+
+### Smoke Test
+
+```bash
+# Cross-platform Python smoke test (recommended)
+python scripts/smoke_test.py
+
+# Or bash smoke test (Linux/macOS only)
+bash scripts/smoke_test.sh
+```
+
+### Runtime Model
+
+The Market Report Agent uses a **continuous service with internal scheduler**:
+- A single `systemd` service runs `scripts/market_report_agent.py` which starts an internal scheduler loop.
+- The scheduler checks market status every `tick_seconds` (default 60s).
+- Intraday reports run every `intraday_interval_hours` (default 2h) during active sessions.
+- Daily close reports run after market close + `post_market_delay_minutes` (default 15m).
+- **No external timer** is used — the timer is provided for documentation only. Do not enable both service and timer for the same agent process.
+
+### systemd Service
+
+**Service** (`systemd/market-report-agent.service`):
+```ini
+[Service]
+Type=simple
+WorkingDirectory=/opt/api-report-agent
+EnvironmentFile=/opt/api-report-agent/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/api-report-agent/.venv/bin/python scripts/market_report_agent.py
+Restart=always
+```
+
+Note: `MARKET_DATA_PROVIDER` is NOT hardcoded in the service file. Set it in `.env` or `config/config.yaml`.
+
+```bash
+sudo systemctl enable market-report-agent
+sudo systemctl start market-report-agent
+sudo systemctl status market-report-agent
+```
+
+### Deployment
+
+```bash
+# Full deploy: venv + deps + systemd + smoke test
+bash scripts/deploy.sh
+```
+
+The deploy script:
+- Creates/updates `.venv`
+- Installs dependencies
+- Installs systemd service unit
+- Restarts service
+- Runs health check and smoke test using venv Python
+- Exits non-zero if any critical check fails
+- Does NOT run uvicorn/python in the foreground
+
+### Troubleshooting
+
+| Issue | Resolution |
+|-------|-----------|
+| MCP connection fails | Verify `LONGBRIDGE_MCP_URL` and `LONGBRIDGE_MCP_OAUTH_TOKEN` in `.env` |
+| "Provider not configured" error | Set `MARKET_DATA_PROVIDER=longbridge_mcp` or use `--provider mock` for smoke testing |
+| "Tool blocked" errors | Trading tools are permanently disabled; account-read requires `ACCOUNT_READ_ENABLED=true` |
+| "Unknown tool" blocked | Tool policy uses default-deny; check `app/policy/tool_policy.py` for allowed list |
+| No data collected | Check market is open (use `--health` to verify) |
+| Validation failures | Check `data/run_logs.jsonl` and `dataset.validation_errors` for details |
+| daily_close_report blocked on weekend | Expected — validator rejects holidays/weekends; use `-06-05` (Friday) for testing |
+| Broken virtualenv | `rm -rf .venv && bash scripts/deploy.sh` |
+| Duplicate reports skipped | Scheduler uses persistent JSONL dedup; check `data/dedup_state.jsonl` |
+| Notification failure shows as FAILED | DISPATCHED only when all enabled channels succeed; check `logs/notification.jsonl` |
+| Smoke test fails on Windows | Use `python scripts/smoke_test.py` (cross-platform); bash smoke_test.sh is Linux/macOS only |
+| Console encoding errors (Windows) | ConsoleNotifier handles UnicodeEncodeError with ASCII fallback |
+
 ## Configuration
 
 Non-sensitive configuration lives in `config/registry.yaml`. This file is the project configuration registry and is safe to commit. It stores repeated operational settings such as provider selection, collection intervals, output paths, notification routing, email delivery options, AI model names, and watched symbols.

@@ -1,0 +1,139 @@
+# ── Market Report Agent Configuration ────────────────────────────
+# Copy this file to config/config.yaml and adjust values.
+# Secrets belong in .env, not here.
+
+# ── Longbridge MCP endpoint ─────────────────────────────────────
+longbridge_mcp:
+  # Remote MCP endpoint URL (from Longbridge official MCP)
+  endpoint: ""
+  # OAuth token goes in .env as LONGBRIDGE_MCP_TOKEN
+
+# ── Security ────────────────────────────────────────────────────
+security:
+  # Trading tools are ALWAYS blocked in code.
+  # Account-read tools require this flag to be true.
+  account_read_enabled: false
+  # trading_enabled is always forced to false in code.
+  trading_enabled: false
+
+# ── Watchlist ───────────────────────────────────────────────────
+symbols:
+  - symbol: QQQ.US
+    market: US
+    asset_type: equity_etf
+    liquidity_class: high
+    include_in_movers: true
+    sessions:
+      - regular
+    enabled: true
+  - symbol: SGOV.US
+    market: US
+    asset_type: treasury_etf
+    liquidity_class: reference
+    include_in_movers: false
+    sessions:
+      - regular
+    enabled: true
+  - symbol: HSBC.US
+    market: US
+    asset_type: equity
+    liquidity_class: medium
+    include_in_movers: true
+    sessions:
+      - regular
+    enabled: true
+  - symbol: VIX
+    market: US
+    asset_type: index
+    liquidity_class: reference
+    include_in_movers: false
+    sessions:
+      - regular
+    enabled: true
+
+# ── Markets ─────────────────────────────────────────────────────
+markets:
+  - market: US
+    timezone: America/New_York
+    regular_open: "09:30"
+    regular_close: "16:00"
+    extended_pre_open: "04:00"
+    extended_pre_close: "09:30"
+    extended_post_open: "16:00"
+    extended_post_close: "20:00"
+  - market: HK
+    timezone: Asia/Hong_Kong
+    regular_open: "09:30"
+    regular_close: "16:00"
+    lunch_start: "12:00"
+    lunch_end: "13:00"
+
+# ── Schedule ────────────────────────────────────────────────────
+schedule:
+  # Check interval for the scheduler loop
+  tick_seconds: 60
+  # Intraday report interval (hours)
+  intraday_interval_hours: 2
+  # Post-market delay (minutes after close before generating daily report)
+  post_market_delay_minutes: 15
+  # Maximum lookback for event detection (minutes)
+  event_lookback_minutes: 10
+
+# ── Data pipeline ───────────────────────────────────────────────
+data_pipeline:
+  raw_output_dir: data/raw
+  clean_output_dir: data/clean
+  validate_on_collect: true
+  skip_invalid: true
+
+# ── Report thresholds ───────────────────────────────────────────
+report_thresholds:
+  # Event alert thresholds
+  price_change_pct: 3.0
+  volume_spike_ratio: 3.0
+  # Intraday brief max symbols
+  max_intraday_symbols: 10
+
+# ── Notification settings ───────────────────────────────────────
+notifications:
+  channels:
+    - email
+    - archive
+  # Email settings (SMTP password in .env)
+  email:
+    enabled: false
+    smtp_host: smtp.example.com
+    smtp_port: 587
+    smtp_username: report@example.com
+    smtp_use_tls: true
+    smtp_force_ipv4: true
+    smtp_retries: 3
+    smtp_retry_seconds: 5
+    from_addr: report@example.com
+    to_addrs:
+      - ops@example.com
+    subject_prefix: "[Market Report]"
+  # Webhook settings (optional)
+  webhook:
+    enabled: false
+    url: ""
+  # Audit logs
+  audit_dir: logs/notifications
+
+# ── Report storage ──────────────────────────────────────────────
+reports:
+  base_dir: reports
+  retention_days: 90
+  format: markdown
+
+# ── Run log storage ─────────────────────────────────────────────
+run_logs:
+  path: data/run_logs.jsonl
+  max_entries: 10000
+
+# ── Observability ───────────────────────────────────────────────
+observability:
+  log_dir: logs
+  data_access_log: logs/data_access.jsonl
+  report_generation_log: logs/report_generation.jsonl
+  notification_log: logs/notification.jsonl

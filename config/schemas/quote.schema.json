@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-report-agent/schemas/quote.json",
+  "title": "Quote",
+  "description": "A single stock quote data point.",
+  "type": "object",
+  "required": ["symbol", "market", "latest_price", "timestamp"],
+  "properties": {
+    "symbol": {"type": "string", "minLength": 1},
+    "market": {"type": "string", "enum": ["US", "HK"]},
+    "latest_price": {"type": "number", "minimum": 0},
+    "previous_close": {"type": "number", "minimum": 0},
+    "change_percent": {"type": "number"},
+    "open": {"type": "number"},
+    "high": {"type": "number"},
+    "low": {"type": "number"},
+    "volume": {"type": "integer", "minimum": 0},
+    "turnover": {"type": "number", "minimum": 0},
+    "bid": {"type": "number", "minimum": 0},
+    "ask": {"type": "number", "minimum": 0},
+    "trade_status": {"type": "string"},
+    "currency": {"type": "string"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "event_time": {"type": "string", "format": "date-time"},
+    "source": {"type": "string"}
+  },
+  "additionalProperties": false
+}
