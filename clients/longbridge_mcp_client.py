@@ -45,9 +45,10 @@ logger = logging.getLogger(__name__)
 # ── Default MCP endpoint ─────────────────────────────────────────
 _DEFAULT_MCP_URL = "https://mcp.longbridge.com"
 
-_REQUIRED_INTERNAL_OPERATIONS = frozenset(
-    {"quote", "candles", "intraday", "market_status"}
+_REQUIRED_MARKET_TOOLS = frozenset(
+    {"quote", "candlesticks", "intraday", "market_status", "trading_session"}
 )
+_DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
 
 
 class LongbridgeMcpClient(MarketDataClient):
@@ -70,11 +71,15 @@ class LongbridgeMcpClient(MarketDataClient):
         mcp_url: str | None = None,
         auth_header: str | None = None,
         account_read_enabled: bool = False,
+        http_timeout_seconds: float | None = None,
     ) -> None:
         self._mcp_url = mcp_url or os.getenv("LONGBRIDGE_MCP_URL", "") or _DEFAULT_MCP_URL
         self._auth_header = auth_header or os.getenv("LONGBRIDGE_MCP_AUTH_HEADER", "")
         self._account_read_enabled = account_read_enabled or (
             os.getenv("ACCOUNT_READ_ENABLED", "false").lower() == "true"
+        )
+        self._http_timeout_seconds = http_timeout_seconds or float(
+            os.getenv("LONGBRIDGE_MCP_TIMEOUT_SECONDS", _DEFAULT_HTTP_TIMEOUT_SECONDS)
         )
 
         # Tool policy (default-deny, discovery-first)
@@ -134,15 +139,12 @@ class LongbridgeMcpClient(MarketDataClient):
                 self._policy.update_from_discovery(tools)
                 logger.info("Discovered %d Longbridge MCP tools: %s", len(tools), tools)
 
-                missing_required = {
-                    operation
-                    for operation in _REQUIRED_INTERNAL_OPERATIONS
-                    if not self._policy.has_mapping(operation)
-                }
+                missing_required = _REQUIRED_MARKET_TOOLS - set(tools)
                 if missing_required:
                     self._discovery_error = (
-                        f"Required MCP operations not mapped from discovered tools: "
-                        f"{', '.join(sorted(missing_required))}. Discovered: {sorted(tools)}"
+                        "Required Longbridge MCP market tools missing: "
+                        f"{', '.join(sorted(missing_required))}. "
+                        f"Discovered tool count: {len(tools)}"
                     )
                     logger.error(self._discovery_error)
             else:
@@ -188,6 +190,17 @@ class LongbridgeMcpClient(MarketDataClient):
     def get_discovery_error(self) -> str | None:
         """Return discovery error message if any."""
         return self._discovery_error
+
+    def _discovery_health_details(self) -> dict[str, Any]:
+        discovered = self._policy.get_discovered_tools()
+        missing = _REQUIRED_MARKET_TOOLS - discovered
+        return {
+            "discovered_tool_count": len(discovered),
+            "required_tools": sorted(_REQUIRED_MARKET_TOOLS),
+            "required_tools_present": sorted(_REQUIRED_MARKET_TOOLS & discovered),
+            "required_tools_missing": sorted(missing),
+            "required_tools_ok": not missing,
+        }
 
     # ── MCP transport ────────────────────────────────────────────
 
@@ -271,7 +284,7 @@ class LongbridgeMcpClient(MarketDataClient):
         if self._auth_header:
             message = message.replace(self._auth_header, "[REDACTED_AUTHORIZATION]")
             parts = self._auth_header.split(" ", 1)
-            if len(parts) == 2 and parts[1]:
+            if len(parts) == 2 and len(parts[1]) >= 8:
                 message = message.replace(parts[1], "[REDACTED_TOKEN]")
         return message
 
@@ -334,11 +347,14 @@ class LongbridgeMcpClient(MarketDataClient):
                     import httpx
 
                     http_client = await stack.enter_async_context(
-                        httpx.AsyncClient(headers={"Authorization": self._auth_header})
+                        httpx.AsyncClient(
+                            headers={"Authorization": self._auth_header},
+                            timeout=self._http_timeout_seconds,
+                            follow_redirects=True,
+                        )
                     )
                     transport_context = streamable_http_client(
-                        url=self._mcp_url,
-                        http_client=http_client,
+                        self._mcp_url, http_client=http_client
                     )
 
                 try:
@@ -402,6 +418,7 @@ class LongbridgeMcpClient(MarketDataClient):
                 "status": "not_configured",
                 "error": "LONGBRIDGE_MCP_AUTH_HEADER not set",
                 "mcp_endpoint": self._mcp_url,
+                **self._discovery_health_details(),
             }
 
         if self._session_error and not self._connected:
@@ -411,6 +428,7 @@ class LongbridgeMcpClient(MarketDataClient):
                 "status": "session_error",
                 "error": self._session_error,
                 "mcp_endpoint": self._mcp_url,
+                **self._discovery_health_details(),
             }
 
         # Check discovery
@@ -423,29 +441,18 @@ class LongbridgeMcpClient(MarketDataClient):
                 "status": "discovery_failed",
                 "error": self._sanitize_error_message(exc)[:300],
                 "mcp_endpoint": self._mcp_url,
+                **self._discovery_health_details(),
             }
 
-        try:
-            self._call_mcp_tool("market_status", {"market": "US"})
-            self._connected = True
-            return {
-                "ok": True,
-                "provider": "longbridge_mcp",
-                "status": "connected",
-                "mcp_endpoint": self._mcp_url,
-                "discovery": "ok",
-                "discovery_detail": None,
-            }
-        except Exception as exc:
-            return {
-                "ok": False,
-                "provider": "longbridge_mcp",
-                "status": "connection_failed",
-                "error": self._sanitize_error_message(exc)[:300],
-                "mcp_endpoint": self._mcp_url,
-                "discovery": "ok",
-                "discovery_detail": None,
-            }
+        self._connected = True
+        return {
+            "ok": True,
+            "provider": "longbridge_mcp",
+            "status": "connected",
+            "mcp_endpoint": self._mcp_url,
+            "discovery": "ok",
+            **self._discovery_health_details(),
+        }
 
     # ── MarketDataClient implementation ──────────────────────────
 

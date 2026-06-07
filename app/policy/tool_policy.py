@@ -47,12 +47,18 @@ _TRADING_TOOLS: set[str] = {
     "dca_resume",
     "alert_add",
     "alert_delete",
+    "alert_disable",
+    "alert_enable",
     "create_watchlist_group",
     "delete_watchlist_group",
+    "update_watchlist_group",
     "sharelist_add",
     "sharelist_create",
     "sharelist_delete",
     "sharelist_remove",
+    "sharelist_sort",
+    "topic_create",
+    "topic_create_reply",
 }
 
 # Account-read tools — disabled by default
@@ -66,8 +72,8 @@ _ACCOUNT_READ_TOOLS: set[str] = {
     "statement_list",
 }
 
-_APPROVED_INTERNAL_OPERATIONS = frozenset(
-    {"quote", "candles", "intraday", "market_status", "fundamentals"}
+_APPROVED_MARKET_TOOLS = frozenset(
+    {"quote", "candlesticks", "intraday", "market_status", "trading_session"}
 )
 
 
@@ -113,51 +119,23 @@ class LongbridgeToolPolicy:
         This maps internal operation names to the actual tool names
         discovered from the Longbridge MCP endpoint.
 
-        Unverified tool names (get_stock_quote, get_intraday) are NOT
-        in the default map — they must be discovered to be usable.
+        Compatibility aliases and unknown tools remain denied even if discovered.
         """
         discovered = set(discovered_tool_names)
         self._discovered_tools = discovered
-        self._tool_map = {}
-        self._allowed_market_tools = set()
-
-        # Map internal ops to discovered official names
-        remap: dict[str, str] = {}
-
-        # candlesticks → candles
-        if "candlesticks" in discovered:
-            remap["candles"] = "candlesticks"
-
-        # trading_session → market_status
-        if "trading_session" in discovered:
-            remap["market_status"] = "trading_session"
-
-        # Quote/intraday names are accepted only after discovery proves they exist.
-        for name in ("get_stock_quote", "quote"):
-            if name in discovered:
-                remap["quote"] = name
-                break
-
-        # Intraday detection — must be discovered, no default fallback
-        for name in ("get_intraday", "intraday"):
-            if name in discovered:
-                remap["intraday"] = name
-                break
-
-        # Stock info / fundamentals
-        for name in ("get_stock_info", "fundamentals"):
-            if name in discovered:
-                remap["fundamentals"] = name
-                break
-
-        self._tool_map.update(remap)
-        self._allowed_market_tools = {
-            tool
-            for operation, tool in self._tool_map.items()
-            if operation in _APPROVED_INTERNAL_OPERATIONS
-            and tool not in _TRADING_TOOLS
-            and tool not in _ACCOUNT_READ_TOOLS
+        mappings = {
+            "quote": "quote",
+            "candles": "candlesticks",
+            "intraday": "intraday",
+            # Session timestamps are required by scheduler/report validation.
+            "market_status": "trading_session",
         }
+        self._tool_map = {
+            operation: tool
+            for operation, tool in mappings.items()
+            if tool in discovered
+        }
+        self._allowed_market_tools = discovered & _APPROVED_MARKET_TOOLS
 
     def get_mapped_tool(self, internal_name: str) -> str | None:
         """Resolve an internal operation name to the actual MCP tool name.

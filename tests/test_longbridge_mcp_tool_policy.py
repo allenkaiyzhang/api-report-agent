@@ -34,8 +34,11 @@ class TestLongbridgeToolPolicy(unittest.TestCase):
             "submit_order", "replace_order", "cancel_order", "withdrawals",
             "dca_create", "dca_update", "dca_stop", "dca_pause", "dca_resume",
             "alert_add", "alert_delete",
+            "alert_disable", "alert_enable",
             "create_watchlist_group", "delete_watchlist_group",
+            "update_watchlist_group",
             "sharelist_add", "sharelist_create", "sharelist_delete", "sharelist_remove",
+            "sharelist_sort", "topic_create", "topic_create_reply",
         }
         self.assertEqual(self.policy.trading_tools, frozenset(expected))
 
@@ -98,7 +101,9 @@ class TestLongbridgeToolPolicy(unittest.TestCase):
         self.assertEqual(allowed, frozenset())
 
     def test_allowed_market_tools_pass(self):
-        discovered = ["quote", "candlesticks", "trading_session", "intraday"]
+        discovered = [
+            "quote", "candlesticks", "intraday", "market_status", "trading_session",
+        ]
         self.policy.update_from_discovery(discovered)
         self.assertEqual(self.policy.allowed_market_tools, frozenset(discovered))
         for tool in discovered:
@@ -106,19 +111,19 @@ class TestLongbridgeToolPolicy(unittest.TestCase):
             self.assertTrue(result.allowed, f"Market tool {tool} should be allowed")
             self.assertEqual(result.category, ToolCategory.ALLOWED_MARKET)
 
-    def test_aliases_are_allowed_only_when_discovered(self):
+    def test_compatibility_aliases_remain_denied_even_when_discovered(self):
         for alias in ("get_stock_quote", "get_intraday"):
             self.assertFalse(self.policy.is_allowed(alias))
 
         self.policy.update_from_discovery(
             ["get_stock_quote", "candlesticks", "trading_session", "get_intraday"]
         )
-        self.assertTrue(self.policy.is_allowed("get_stock_quote"))
-        self.assertTrue(self.policy.is_allowed("get_intraday"))
+        self.assertFalse(self.policy.is_allowed("get_stock_quote"))
+        self.assertFalse(self.policy.is_allowed("get_intraday"))
 
     def test_discovery_does_not_enable_blocked_or_unknown_tools(self):
         self.policy.update_from_discovery([
-            "quote", "candlesticks", "trading_session", "intraday",
+            "quote", "candlesticks", "trading_session", "intraday", "market_status",
             "stock_positions", "today_orders", "history_orders",
             "today_executions", "history_executions", "account_balance",
             "submit_order", "replace_order", "cancel_order", "withdrawals",
@@ -165,19 +170,25 @@ class TestLongbridgeToolPolicy(unittest.TestCase):
         self.assertIsNone(self.policy.get_mapped_tool("intraday"))
 
     def test_update_from_discovery(self):
-        """Tool discovery updates the mapping for quote/intraday."""
+        """Tool discovery maps only verified workflow tool names."""
         self.policy.update_from_discovery([
+            "quote",
             "candlesticks",
+            "intraday",
+            "market_status",
             "trading_session",
             "get_stock_quote",
             "get_intraday",
         ])
         self.assertEqual(self.policy.get_mapped_tool("candles"), "candlesticks")
         self.assertEqual(self.policy.get_mapped_tool("market_status"), "trading_session")
-        self.assertEqual(self.policy.get_mapped_tool("quote"), "get_stock_quote")
-        self.assertEqual(self.policy.get_mapped_tool("intraday"), "get_intraday")
+        self.assertEqual(self.policy.get_mapped_tool("quote"), "quote")
+        self.assertEqual(self.policy.get_mapped_tool("intraday"), "intraday")
         self.assertTrue(self.policy.is_allowed("candlesticks"))
         self.assertTrue(self.policy.is_allowed("trading_session"))
+        self.assertTrue(self.policy.is_allowed("market_status"))
+        self.assertFalse(self.policy.is_allowed("get_stock_quote"))
+        self.assertFalse(self.policy.is_allowed("get_intraday"))
 
     def test_missing_discovered_quote_returns_none(self):
         """Without discovery, quote has no mapping."""

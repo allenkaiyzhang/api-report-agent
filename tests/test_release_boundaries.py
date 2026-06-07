@@ -31,9 +31,10 @@ ROOT = Path(__file__).resolve().parents[1]
 def _discovered_tools() -> dict:
     return {
         "tools": [
-            {"name": "get_stock_quote"},
+            {"name": "quote"},
             {"name": "candlesticks"},
             {"name": "intraday"},
+            {"name": "market_status"},
             {"name": "trading_session"},
             {"name": "submit_order"},
             {"name": "unknown_read_tool"},
@@ -106,14 +107,48 @@ def test_discovered_tools_map_and_policy_is_enforced_before_call() -> None:
 
     client.discover_tools()
 
-    assert client.policy.get_mapped_tool("quote") == "get_stock_quote"
+    assert client.policy.get_mapped_tool("quote") == "quote"
     assert client.policy.get_mapped_tool("candles") == "candlesticks"
     assert client.policy.get_mapped_tool("market_status") == "trading_session"
     assert not client.policy.is_allowed("unknown_read_tool")
     assert not client.policy.is_allowed("submit_order")
 
     client.get_quotes(["QQQ"])
-    client._call_mcp_raw.assert_called_with("get_stock_quote", {"symbols": ["QQQ"]})
+    client._call_mcp_raw.assert_called_with("quote", {"symbols": ["QQQ"]})
+
+
+def test_health_fails_when_required_market_tools_are_missing() -> None:
+    client = LongbridgeMcpClient(auth_header="Bearer test")
+    client._list_tools_raw = MagicMock(
+        return_value={"tools": [{"name": "quote"}, {"name": "candlesticks"}]}
+    )
+    client._call_mcp_raw = MagicMock()
+
+    result = client.health_check()
+
+    assert result["ok"] is False
+    assert result["status"] == "discovery_failed"
+    assert result["discovered_tool_count"] == 2
+    assert result["required_tools_ok"] is False
+    assert result["required_tools_missing"] == [
+        "intraday", "market_status", "trading_session",
+    ]
+    client._call_mcp_raw.assert_not_called()
+
+
+def test_health_succeeds_when_all_required_market_tools_are_discovered() -> None:
+    client = LongbridgeMcpClient(auth_header="Bearer test")
+    client._list_tools_raw = MagicMock(return_value=_discovered_tools())
+    client._call_mcp_raw = MagicMock()
+
+    result = client.health_check()
+
+    assert result["ok"] is True
+    assert result["status"] == "connected"
+    assert result["discovered_tool_count"] == 7
+    assert result["required_tools_ok"] is True
+    assert result["required_tools_missing"] == []
+    client._call_mcp_raw.assert_not_called()
 
 
 def test_health_discovery_failure_is_not_healthy() -> None:

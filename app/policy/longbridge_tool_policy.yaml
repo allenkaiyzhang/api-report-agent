@@ -4,11 +4,12 @@ longbridge_tool_policy:
   discovery_required: true
   allowed_market_tools_before_discovery: []
 
-  required_internal_operations:
+  required_market_tools:
     - quote
-    - candles
+    - candlesticks
     - intraday
     - market_status
+    - trading_session
 
   account_read_disabled_by_default:
     - account_balance
@@ -31,9 +32,15 @@ longbridge_tool_policy:
     - dca_resume
     - alert_add
     - alert_delete
+    - alert_disable
+    - alert_enable
     - create_watchlist_group
     - delete_watchlist_group
+    - update_watchlist_group
     - sharelist_add
     - sharelist_create
     - sharelist_delete
     - sharelist_remove
+    - sharelist_sort
+    - topic_create
+    - topic_create_reply

@@ -88,6 +88,8 @@ def test_streamable_transport_accepts_two_and_three_tuples(
     assert "headers" not in call
     assert isinstance(call["http_client"], httpx.AsyncClient)
     assert call["http_client"].headers["Authorization"] == "Bearer test"
+    assert call["http_client"].follow_redirects is True
+    assert call["http_client"].timeout.read == 30.0
     assert call["http_client"].is_closed
 
 
@@ -124,6 +126,8 @@ def test_streamable_client_receives_http_client_without_headers_kwarg(
     assert set(call) == {"url", "http_client", "terminate_on_close"}
     assert isinstance(call["http_client"], httpx.AsyncClient)
     assert call["http_client"].headers["Authorization"] == "Bearer secret-value"
+    assert call["http_client"].follow_redirects is True
+    assert call["http_client"].timeout.read == 30.0
 
 
 def test_legacy_streamable_client_alias_is_import_only_compatible(
@@ -136,7 +140,7 @@ def test_legacy_streamable_client_alias_is_import_only_compatible(
     streamable = types.ModuleType("mcp.client.streamable_http")
 
     @asynccontextmanager
-    async def streamablehttp_client(**kwargs):
+    async def streamablehttp_client(url, **kwargs):
         yield ("read", "write", lambda: "id")
 
     streamable.streamablehttp_client = streamablehttp_client
@@ -159,7 +163,7 @@ def test_runtime_streamable_error_does_not_fall_back_to_sse(
     sse_called = False
 
     @asynccontextmanager
-    async def streamable_http_client(**kwargs):
+    async def streamable_http_client(url, **kwargs):
         raise ValueError("streamable runtime failure")
         yield
 
@@ -197,7 +201,7 @@ def test_transport_error_does_not_log_or_raise_full_authorization(
     streamable = types.ModuleType("mcp.client.streamable_http")
 
     @asynccontextmanager
-    async def streamable_http_client(**kwargs):
+    async def streamable_http_client(url, **kwargs):
         raise RuntimeError(f"provider rejected {secret}")
         yield
 
@@ -223,7 +227,7 @@ def test_streamable_open_exception_group_surfaces_leaf_cause(
     streamable = types.ModuleType("mcp.client.streamable_http")
 
     @asynccontextmanager
-    async def streamable_http_client(**kwargs):
+    async def streamable_http_client(url, **kwargs):
         raise ExceptionGroup(
             "transport task group",
             [httpx.ConnectTimeout("connection timed out")],
@@ -253,7 +257,7 @@ def test_streamable_lifecycle_exception_group_surfaces_in_health(
     streamable = types.ModuleType("mcp.client.streamable_http")
 
     @asynccontextmanager
-    async def streamable_http_client(**kwargs):
+    async def streamable_http_client(url, **kwargs):
         yield ("read", "write", lambda: "id")
         raise ExceptionGroup(
             "transport close task group",
