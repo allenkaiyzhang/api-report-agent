@@ -114,7 +114,10 @@ def test_tool_policy_default_deny_unknown():
 def test_tool_policy_allowed_market_tools():
     from app.policy.tool_policy import LongbridgeToolPolicy
     policy = LongbridgeToolPolicy()
-    for tool in policy.allowed_market_tools:
+    discovered = ["quote", "candlesticks", "trading_session", "intraday"]
+    policy.update_from_discovery(discovered)
+    assert policy.allowed_market_tools == frozenset(discovered)
+    for tool in discovered:
         result = policy.check_tool(tool)
         assert result.allowed, f"Market tool {tool} should be allowed"
 

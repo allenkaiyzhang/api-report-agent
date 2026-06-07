@@ -1,113 +1,99 @@
 #!/usr/bin/env bash
-# deploy.sh — Deploy api-report-agent and Market Report Agent
-# Creates/updates venv, installs dependencies, sets up systemd service.
-# Uses continuous service model (no timer — scheduler runs inside the Python process).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-# Override when deploying to ECS/VPS
 DEPLOY_ROOT="${DEPLOY_ROOT:-$PROJECT_ROOT}"
 VENV_DIR="${VENV_DIR:-$DEPLOY_ROOT/.venv}"
-PYTHON="$VENV_DIR/bin/python"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-LOG_FILE="$PROJECT_ROOT/deploy.log"
+PYTHON="$VENV_DIR/bin/python"
+SERVICE_USER="${SERVICE_USER:-deploy}"
+SERVICE_GROUP="${SERVICE_GROUP:-$SERVICE_USER}"
+MCP_SERVICE_NAME="${MCP_SERVICE_NAME:-market-report-agent}"
+SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
+DRY_RUN=false
 
-SERVICE_NAME="${SERVICE_NAME:-api-report-agent}"
-MCP_SERVICE_NAME="market-report-agent"
-SYSTEMD_DIR="/etc/systemd/system"
-
-mkdir -p "$PROJECT_ROOT/data" "$PROJECT_ROOT/logs" "$PROJECT_ROOT/runtime"
-touch "$LOG_FILE"
-exec > >(tee -a "$LOG_FILE") 2>&1
-
-cd "$PROJECT_ROOT"
-
-echo "=== Deploying from $PROJECT_ROOT ==="
-echo ""
-
-# --- .env check ---
-if [[ ! -f "$PROJECT_ROOT/.env" ]]; then
-  echo "WARNING: .env is missing. Copy .env.example to .env and configure it."
-  echo "  At minimum, set MARKET_DATA_PROVIDER=longbridge_mcp and LONGBRIDGE_MCP_AUTH_HEADER."
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=true
+elif [[ $# -gt 0 ]]; then
+  echo "ERROR: unsupported argument: $1" >&2
+  exit 2
 fi
 
-# --- Create/update virtualenv ---
-if [[ ! -x "$PYTHON" ]]; then
-    echo "--- Creating virtualenv (missing or not executable) ---"
-    rm -rf "$VENV_DIR"
-    $PYTHON_BIN -m venv "$VENV_DIR"
+if [[ ! -d "$DEPLOY_ROOT" ]]; then
+  echo "ERROR: DEPLOY_ROOT does not exist: $DEPLOY_ROOT" >&2
+  exit 1
 fi
 
-"$PYTHON" --version
-"$PYTHON" -m pip --version
-"$PYTHON" -m pip install --upgrade pip -q
-
-echo "--- Installing dependencies ---"
-"$PYTHON" -m pip install -r requirements.txt -q
-
-# --- Quick import check ---
-echo "--- Python import health check ---"
-"$PYTHON" -c "
-from clients.market_data_client import MarketDataClient
-from clients.mock_market_data_client import MockMarketDataClient
-from clients.longbridge_mcp_client import LongbridgeMcpClient
-from app.policy.tool_policy import LongbridgeToolPolicy
-from core.mcp_collector import McpDataCollector
-from core.mcp_cleaner import McpDataCleaner
-from core.mcp_validator import McpDataValidator
-from core.mcp_report_generator import ReportGenerator
-from core.mcp_scheduler import McpScheduler
-from core.mcp_notifier import ConsoleNotifier, NotifierResult, create_notifiers
-from core.mcp_datastore import McpDataStore
-print('All imports OK')
-"
-
-# --- systemd: market-report-agent service (continuous scheduler) ---
-MCP_SERVICE_FILE="$PROJECT_ROOT/systemd/$MCP_SERVICE_NAME.service"
-if [ -f "$MCP_SERVICE_FILE" ]; then
-    echo "--- Installing systemd: $MCP_SERVICE_NAME ---"
-    cp "$MCP_SERVICE_FILE" "$SYSTEMD_DIR/$MCP_SERVICE_NAME.service"
-    systemctl daemon-reload
-    systemctl enable "$MCP_SERVICE_NAME"
-    systemctl restart "$MCP_SERVICE_NAME"
-    sleep 2
-    if ! systemctl --no-pager --full is-active "$MCP_SERVICE_NAME" > /dev/null 2>&1; then
-        echo "ERROR: $MCP_SERVICE_NAME failed to start"
-        systemctl --no-pager --full status "$MCP_SERVICE_NAME" || true
-        exit 1
-    fi
-    echo "$MCP_SERVICE_NAME is active"
-else
-    echo "WARNING: $MCP_SERVICE_FILE not found; skipping systemd install"
+SERVICE_TEMPLATE="$DEPLOY_ROOT/systemd/$MCP_SERVICE_NAME.service.template"
+RENDERED_SERVICE="$DEPLOY_ROOT/runtime/$MCP_SERVICE_NAME.service"
+if [[ ! -f "$SERVICE_TEMPLATE" ]]; then
+  echo "ERROR: systemd template not found: $SERVICE_TEMPLATE" >&2
+  exit 1
 fi
 
-# --- Health check ---
-echo ""
-echo "--- Health check ---"
-if ! "$PYTHON" scripts/market_report_agent.py --health 2>&1; then
-    echo "ERROR: Health check failed"
+mkdir -p "$DEPLOY_ROOT/data" "$DEPLOY_ROOT/logs" "$DEPLOY_ROOT/runtime"
+cd "$DEPLOY_ROOT"
+
+render_service() {
+  "$PYTHON_BIN" scripts/render_systemd_service.py \
+    --template "$SERVICE_TEMPLATE" \
+    --output "$RENDERED_SERVICE" \
+    --deploy-root "$DEPLOY_ROOT" \
+    --venv-dir "$VENV_DIR" \
+    --service-user "$SERVICE_USER" \
+    --service-group "$SERVICE_GROUP"
+
+  if grep -Eq '\{\{[^}]+\}\}' "$RENDERED_SERVICE"; then
+    echo "ERROR: rendered service contains unresolved placeholders" >&2
     exit 1
+  fi
+}
+
+render_service
+
+if [[ "$DRY_RUN" == "true" ]]; then
+  echo "DRY RUN PASS: rendered service at $RENDERED_SERVICE"
+  exit 0
 fi
 
-# --- Smoke test (uses venv python) ---
-echo ""
-echo "--- Smoke test ---"
-# Run smoke test via Python script for cross-platform compatibility
-if [ -f "$PROJECT_ROOT/scripts/smoke_test.py" ]; then
-    if ! "$PYTHON" scripts/smoke_test.py 2>&1; then
-        echo "ERROR: Smoke test failed"
-        exit 1
-    fi
-elif [ -f "$PROJECT_ROOT/scripts/smoke_test.sh" ]; then
-    if ! bash scripts/smoke_test.sh 2>&1; then
-        echo "ERROR: Smoke test failed"
-        exit 1
-    fi
+if [[ ! -f "$DEPLOY_ROOT/.env" ]]; then
+  echo "ERROR: required environment file missing: $DEPLOY_ROOT/.env" >&2
+  exit 1
+fi
+
+if [[ ! -x "$PYTHON" ]]; then
+  "$PYTHON_BIN" -m venv "$VENV_DIR"
+fi
+if [[ ! -x "$PYTHON" ]]; then
+  echo "ERROR: venv Python does not exist or is not executable: $PYTHON" >&2
+  exit 1
+fi
+
+"$PYTHON" -m pip install --upgrade pip -q
+"$PYTHON" -m pip install -r requirements.txt -q
+"$PYTHON" -m pytest -q
+
+cp "$RENDERED_SERVICE" "$SYSTEMD_DIR/$MCP_SERVICE_NAME.service"
+systemctl daemon-reload
+systemctl enable "$MCP_SERVICE_NAME"
+systemctl restart "$MCP_SERVICE_NAME"
+sleep 2
+if ! systemctl --no-pager --full is-active "$MCP_SERVICE_NAME" >/dev/null 2>&1; then
+  echo "ERROR: $MCP_SERVICE_NAME failed to start" >&2
+  systemctl --no-pager --full status "$MCP_SERVICE_NAME" || true
+  exit 1
+fi
+
+"$PYTHON" scripts/market_report_agent.py --health
+
+if [[ -f "$DEPLOY_ROOT/scripts/smoke_test.py" ]]; then
+  "$PYTHON" scripts/smoke_test.py
+elif [[ -f "$DEPLOY_ROOT/scripts/smoke_test.sh" ]]; then
+  bash scripts/smoke_test.sh
 else
-    echo "WARNING: No smoke test script found"
+  echo "ERROR: no smoke test script found" >&2
+  exit 1
 fi
 
-echo ""
-echo "=== Deploy complete ==="
+echo "Deploy complete: root=$DEPLOY_ROOT venv=$VENV_DIR service=$MCP_SERVICE_NAME"

@@ -32,7 +32,7 @@ scripts/market_report_agent.py  production entrypoint
 scripts/healthcheck_mcp.py   provider-aware health check
 scripts/smoke_test.py        no-auth mock smoke test
 scripts/deploy.sh            venv + systemd + health + smoke deployment
-systemd/market-report-agent.service
+systemd/market-report-agent.service.template
 tests/
 ```
 
@@ -89,6 +89,11 @@ python scripts/smoke_test.py
 Without an authorized Longbridge session, the real-provider health command must
 fail clearly with a non-zero exit code.
 
+The smoke test and mocked MCP transport tests do not prove real Longbridge data
+retrieval. Real integration requires an externally authorized MCP session,
+successful tool discovery against the Longbridge endpoint, and compatible
+provider response schemas.
+
 ## ECS / EC2 / VPS Deployment
 
 The deployment model is `venv + systemd`. Run:
@@ -97,7 +102,25 @@ The deployment model is `venv + systemd`. Run:
 sudo bash scripts/deploy.sh
 ```
 
-`scripts/deploy.sh` installs dependencies, installs/restarts
+By default, `DEPLOY_ROOT` is the current repository root and `VENV_DIR` is
+`$DEPLOY_ROOT/.venv`. A custom `DEPLOY_ROOT` must already contain the project
+checkout. Set both environment variables to use custom paths:
+
+```bash
+sudo DEPLOY_ROOT=/srv/api-report-agent VENV_DIR=/srv/venvs/api-report-agent \
+  bash scripts/deploy.sh
+```
+
+The deploy script renders `systemd/market-report-agent.service.template` with
+the selected project root, venv, and configurable `SERVICE_USER` /
+`SERVICE_GROUP`. It rejects missing roots and unresolved placeholders. Structural
+rendering can be checked without installing or restarting systemd:
+
+```bash
+bash scripts/deploy.sh --dry-run
+```
+
+`scripts/deploy.sh` installs dependencies, installs/restarts the rendered
 `market-report-agent.service`, runs provider-aware health, then runs
 `scripts/smoke_test.py` with venv Python. Its shell fallback is invoked with
 `bash`, never Python. Critical failures exit non-zero.

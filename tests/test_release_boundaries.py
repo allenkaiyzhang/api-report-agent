@@ -171,7 +171,7 @@ def test_health_clis_obey_provider_and_exit_codes() -> None:
 def test_production_entrypoint_and_deploy_smoke_fallback_are_structural() -> None:
     deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     redeploy = (ROOT / "redeploy.sh").read_text(encoding="utf-8")
-    service = (ROOT / "systemd" / "market-report-agent.service").read_text(encoding="utf-8")
+    service = (ROOT / "systemd" / "market-report-agent.service.template").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert '"$PYTHON" scripts/smoke_test.py' in deploy

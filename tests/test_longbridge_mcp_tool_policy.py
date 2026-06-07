@@ -98,10 +98,39 @@ class TestLongbridgeToolPolicy(unittest.TestCase):
         self.assertEqual(allowed, frozenset())
 
     def test_allowed_market_tools_pass(self):
-        for tool in self.policy.allowed_market_tools:
+        discovered = ["quote", "candlesticks", "trading_session", "intraday"]
+        self.policy.update_from_discovery(discovered)
+        self.assertEqual(self.policy.allowed_market_tools, frozenset(discovered))
+        for tool in discovered:
             result = self.policy.check_tool(tool)
             self.assertTrue(result.allowed, f"Market tool {tool} should be allowed")
             self.assertEqual(result.category, ToolCategory.ALLOWED_MARKET)
+
+    def test_aliases_are_allowed_only_when_discovered(self):
+        for alias in ("get_stock_quote", "get_intraday"):
+            self.assertFalse(self.policy.is_allowed(alias))
+
+        self.policy.update_from_discovery(
+            ["get_stock_quote", "candlesticks", "trading_session", "get_intraday"]
+        )
+        self.assertTrue(self.policy.is_allowed("get_stock_quote"))
+        self.assertTrue(self.policy.is_allowed("get_intraday"))
+
+    def test_discovery_does_not_enable_blocked_or_unknown_tools(self):
+        self.policy.update_from_discovery([
+            "quote", "candlesticks", "trading_session", "intraday",
+            "stock_positions", "today_orders", "history_orders",
+            "today_executions", "history_executions", "account_balance",
+            "submit_order", "replace_order", "cancel_order", "withdrawals",
+            "random_unknown_tool",
+        ])
+        for tool in (
+            "stock_positions", "today_orders", "history_orders",
+            "today_executions", "history_executions", "account_balance",
+            "submit_order", "replace_order", "cancel_order", "withdrawals",
+            "random_unknown_tool",
+        ):
+            self.assertFalse(self.policy.is_allowed(tool), tool)
 
     # ── Default-deny unknown tools ──────────────────────────────
 

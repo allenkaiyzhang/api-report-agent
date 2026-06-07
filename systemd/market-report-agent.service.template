@@ -1,0 +1,28 @@
+[Unit]
+Description=Market Report Agent continuous scheduler
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{DEPLOY_ROOT}}
+EnvironmentFile={{DEPLOY_ROOT}}/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart={{VENV_DIR}}/bin/python scripts/market_report_agent.py
+Restart=always
+RestartSec=10
+User={{SERVICE_USER}}
+Group={{SERVICE_GROUP}}
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=market-report-agent
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths={{DEPLOY_ROOT}}/data {{DEPLOY_ROOT}}/reports {{DEPLOY_ROOT}}/logs {{DEPLOY_ROOT}}/runtime
+ReadOnlyPaths={{DEPLOY_ROOT}}
+
+[Install]
+WantedBy=multi-user.target

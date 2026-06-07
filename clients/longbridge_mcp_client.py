@@ -26,8 +26,9 @@ import json
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, AsyncIterator
 
 from app.policy.tool_policy import LongbridgeToolPolicy
 from clients.market_data_client import (
@@ -213,29 +214,10 @@ class LongbridgeMcpClient(MarketDataClient):
 
         try:
             import asyncio
-            from mcp import ClientSession
 
             async def _call() -> Any:
-                try:
-                    from mcp.client.streamable_http import streamablehttp_client
-                    async with streamablehttp_client(
-                        url=self._mcp_url,
-                        headers={"Authorization": self._auth_header},
-                    ) as (read, write):
-                        async with ClientSession(read, write) as session:
-                            await session.initialize()
-                            result = await session.call_tool(tool_name, arguments=arguments)
-                            return result
-                except (ImportError, AttributeError):
-                    from mcp.client.sse import sse_client
-                    async with sse_client(
-                        url=self._mcp_url,
-                        headers={"Authorization": self._auth_header},
-                    ) as (read, write):
-                        async with ClientSession(read, write) as session:
-                            await session.initialize()
-                            result = await session.call_tool(tool_name, arguments=arguments)
-                            return result
+                async with self._open_mcp_session() as session:
+                    return await session.call_tool(tool_name, arguments=arguments)
 
             return asyncio.run(_call())
 
@@ -252,31 +234,64 @@ class LongbridgeMcpClient(MarketDataClient):
         self._ensure_session()
         try:
             import asyncio
-            from mcp import ClientSession
 
             async def _list() -> Any:
-                try:
-                    from mcp.client.streamable_http import streamablehttp_client
-                    async with streamablehttp_client(
-                        url=self._mcp_url,
-                        headers={"Authorization": self._auth_header},
-                    ) as (read, write):
-                        async with ClientSession(read, write) as session:
-                            await session.initialize()
-                            return await session.list_tools()
-                except (ImportError, AttributeError):
-                    from mcp.client.sse import sse_client
-                    async with sse_client(
-                        url=self._mcp_url,
-                        headers={"Authorization": self._auth_header},
-                    ) as (read, write):
-                        async with ClientSession(read, write) as session:
-                            await session.initialize()
-                            return await session.list_tools()
+                async with self._open_mcp_session() as session:
+                    return await session.list_tools()
 
             return asyncio.run(_list())
         except ImportError as exc:
             raise RuntimeError("MCP SDK not installed. Install with: pip install mcp>=1.0.0") from exc
+
+    @staticmethod
+    def _normalize_mcp_transport(transport: Any) -> tuple[Any, Any]:
+        """Extract read/write streams from supported MCP client transport shapes."""
+        if not isinstance(transport, tuple):
+            raise RuntimeError(
+                "Unsupported MCP transport shape: expected a 2-tuple or 3-tuple, "
+                f"got {type(transport).__name__}"
+            )
+        if len(transport) not in (2, 3):
+            raise RuntimeError(
+                "Unsupported MCP transport tuple length: expected 2 or 3 items, "
+                f"got {len(transport)}"
+            )
+        read, write = transport[0], transport[1]
+        if read is None or write is None:
+            raise RuntimeError("Unsupported MCP transport shape: read/write streams are required")
+        return read, write
+
+    @asynccontextmanager
+    async def _open_mcp_session(self) -> AsyncIterator[Any]:
+        """Open and initialize an MCP session over Streamable HTTP or import-only SSE fallback."""
+        from mcp import ClientSession
+
+        try:
+            from mcp.client.streamable_http import streamable_http_client
+        except ImportError:
+            try:
+                from mcp.client.streamable_http import streamablehttp_client as streamable_http_client
+            except ImportError:
+                streamable_http_client = None
+
+        if streamable_http_client is None:
+            from mcp.client.sse import sse_client
+
+            transport_context = sse_client(
+                url=self._mcp_url,
+                headers={"Authorization": self._auth_header},
+            )
+        else:
+            transport_context = streamable_http_client(
+                url=self._mcp_url,
+                headers={"Authorization": self._auth_header},
+            )
+
+        async with transport_context as transport:
+            read, write = self._normalize_mcp_transport(transport)
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                yield session
 
     def _call_mcp_tool(self, internal_op: str, arguments: dict[str, Any]) -> Any:
         """Call a Longbridge MCP tool with policy enforcement.
