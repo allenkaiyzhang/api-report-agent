@@ -147,6 +147,28 @@ bash scripts/post_deploy_verify.sh
 
 ## ECS / EC2 / VPS Deployment
 
+### Prerequisites
+
+The deploy user (running `scripts/deploy.sh` or `scripts/post_deploy_verify.sh`)
+requires **passwordless sudo** for `install`, `systemctl`, and `journalctl`.
+Add to `/etc/sudoers` or `/etc/sudoers.d/<user>`:
+
+```
+deploy ALL=(ALL) NOPASSWD: /usr/bin/install, /usr/bin/systemctl, /usr/bin/journalctl
+```
+
+Verify with:
+
+```bash
+sudo -n true
+sudo -n systemctl status market-report-agent --no-pager
+```
+
+The scripts auto-detect root vs non-root and will fail clearly if passwordless
+sudo is not configured.
+
+### Deployment
+
 The deployment model is `venv + systemd`. Run:
 
 ```bash

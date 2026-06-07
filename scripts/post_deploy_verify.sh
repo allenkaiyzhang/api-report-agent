@@ -7,6 +7,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MCP_SERVICE_NAME="${MCP_SERVICE_NAME:-market-report-agent}"
 
+# ------------------------------------------------------------------
+# SUDO detection: passwordless sudo is required for systemd operations
+# ------------------------------------------------------------------
+if [[ "$(id -u)" -eq 0 ]]; then
+  SUDO=""
+elif command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
+  SUDO="sudo -n"
+else
+  echo "ERROR: Passwordless sudo is required for systemd operations." >&2
+  echo "Add to /etc/sudoers or /etc/sudoers.d/$USER:" >&2
+  echo "  $USER ALL=(ALL) NOPASSWD: /usr/bin/install, /usr/bin/systemctl, /usr/bin/journalctl" >&2
+  exit 1
+fi
+
 echo "============================================="
 echo "   ECS/VPS Post-Deploy Verification Script"
 echo "============================================="
@@ -54,15 +68,15 @@ if [ -z "$MARKET_DATA_PROVIDER" ]; then
 fi
 
 echo -e "\n--- Systemd Service Status ---"
-if ! systemctl is-active --quiet "$MCP_SERVICE_NAME"; then
+if ! $SUDO systemctl is-active --quiet "$MCP_SERVICE_NAME"; then
   echo "ERROR: $MCP_SERVICE_NAME is not active" >&2
-  systemctl --no-pager --full status "$MCP_SERVICE_NAME" || true
+  $SUDO systemctl --no-pager --full status "$MCP_SERVICE_NAME" || true
   exit 1
 fi
-systemctl status "$MCP_SERVICE_NAME" --no-pager || true
+$SUDO systemctl status "$MCP_SERVICE_NAME" --no-pager || true
 
 echo -e "\n--- Recent Journald Logs ---"
-journalctl -u "$MCP_SERVICE_NAME" -n 100 --no-pager || true
+$SUDO journalctl -u "$MCP_SERVICE_NAME" -n 100 --no-pager || true
 
 echo -e "\n--- Running Smoke Tests ---"
 python scripts/smoke_test.py

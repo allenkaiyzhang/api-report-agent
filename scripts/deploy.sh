@@ -15,6 +15,22 @@ MCP_SERVICE_NAME="${MCP_SERVICE_NAME:-market-report-agent}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 DRY_RUN=false
 
+# ------------------------------------------------------------------
+# SUDO detection: passwordless sudo is required for systemd operations
+# ------------------------------------------------------------------
+if [[ "$(id -u)" -eq 0 ]]; then
+  SUDO=""
+  echo "Running as root — no sudo prefix needed."
+elif command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
+  SUDO="sudo -n"
+  echo "Running as non-root with passwordless sudo."
+else
+  echo "ERROR: Passwordless sudo is required for systemd deployment." >&2
+  echo "Add to /etc/sudoers or /etc/sudoers.d/$USER:" >&2
+  echo "  $USER ALL=(ALL) NOPASSWD: /usr/bin/install, /usr/bin/systemctl, /usr/bin/journalctl" >&2
+  exit 1
+fi
+
 echo "============================================="
 echo "   [STAGE 1/6] Initializing Deploy Environment"
 echo "============================================="
@@ -110,20 +126,20 @@ echo "============================================="
 echo "   [STAGE 5/6] Copying and Restarting Service"
 echo "============================================="
 echo "Installing service unit to $SYSTEMD_DIR..."
-cp "$RENDERED_SERVICE" "$SYSTEMD_DIR/$MCP_SERVICE_NAME.service"
+$SUDO install -m 0644 "$RENDERED_SERVICE" "$SYSTEMD_DIR/$MCP_SERVICE_NAME.service"
 
 echo "Reloading systemd daemon..."
-systemctl daemon-reload
+$SUDO systemctl daemon-reload
 echo "Enabling and restarting service $MCP_SERVICE_NAME..."
-systemctl enable "$MCP_SERVICE_NAME"
-systemctl restart "$MCP_SERVICE_NAME"
+$SUDO systemctl enable "$MCP_SERVICE_NAME"
+$SUDO systemctl restart "$MCP_SERVICE_NAME"
 
 echo "Waiting for service initialization (2s)..."
 sleep 2
 
-if ! systemctl --no-pager --full is-active "$MCP_SERVICE_NAME" >/dev/null 2>&1; then
+if ! $SUDO systemctl --no-pager --full is-active "$MCP_SERVICE_NAME" >/dev/null 2>&1; then
   echo "ERROR: $MCP_SERVICE_NAME failed to start" >&2
-  systemctl --no-pager --full status "$MCP_SERVICE_NAME" || true
+  $SUDO systemctl --no-pager --full status "$MCP_SERVICE_NAME" || true
   exit 1
 fi
 echo "Service is successfully running!"

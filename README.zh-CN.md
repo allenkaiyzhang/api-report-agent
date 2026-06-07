@@ -58,6 +58,27 @@ ACCOUNT_READ_ENABLED=false
 
 ## 部署与日志
 
+### 前置条件
+
+部署用户（执行 `scripts/deploy.sh` 或 `scripts/post_deploy_verify.sh`）需要
+**免密 sudo** 权限以执行 `install`、`systemctl` 和 `journalctl`。
+在 `/etc/sudoers` 或 `/etc/sudoers.d/<user>` 中添加：
+
+```
+deploy ALL=(ALL) NOPASSWD: /usr/bin/install, /usr/bin/systemctl, /usr/bin/journalctl
+```
+
+验证：
+
+```bash
+sudo -n true
+sudo -n systemctl status market-report-agent --no-pager
+```
+
+脚本会自动检测 root / 非 root 身份，未配置免密 sudo 时将明确报错退出。
+
+### 部署
+
 通过 GitHub Actions 的 "Deploy to ECS" 工作流（`workflow_dispatch`）手动触发部署，
 CD 会先验证目标 commit 的 CI 已通过，再远程执行部署脚本。
 
