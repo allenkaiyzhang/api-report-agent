@@ -71,12 +71,15 @@ jobs:
 
       - name: Render systemd unit
         run: |
+          mkdir -p /tmp/api-report-agent/.venv/bin
+          touch /tmp/api-report-agent/.venv/bin/python
+          touch /tmp/api-report-agent/.env
           source .venv/bin/activate
           python scripts/render_systemd_service.py \
             --template systemd/market-report-agent.service.template \
             --output /tmp/market-report-agent.service \
-            --deploy-root /opt/api-report-agent \
-            --venv-dir /opt/api-report-agent/.venv \
+            --deploy-root /tmp/api-report-agent \
+            --venv-dir /tmp/api-report-agent/.venv \
             --service-user apiagent \
             --service-group apiagent
 
@@ -90,9 +93,9 @@ jobs:
             echo "ERROR: Unresolved placeholders found in service file"
             exit 1
           fi
-          grep -F "WorkingDirectory=/opt/api-report-agent" /tmp/market-report-agent.service
-          grep -F "EnvironmentFile=/opt/api-report-agent/.env" /tmp/market-report-agent.service
-          grep -F "ExecStart=/opt/api-report-agent/.venv/bin/python scripts/market_report_agent.py" /tmp/market-report-agent.service
+          grep -F "WorkingDirectory=/tmp/api-report-agent" /tmp/market-report-agent.service
+          grep -F "EnvironmentFile=/tmp/api-report-agent/.env" /tmp/market-report-agent.service
+          grep -F "ExecStart=/tmp/api-report-agent/.venv/bin/python scripts/market_report_agent.py" /tmp/market-report-agent.service
 
       - name: Verify deploy.sh does not execute .sh files with python
         run: |
