@@ -18,12 +18,19 @@
 - 本仓库未实现完整 Longbridge OAuth 2.1；使用外部已授权会话提供的
   `LONGBRIDGE_MCP_AUTH_HEADER`。
 
+## 依赖
+
+- **生产 / 部署:** `requirements.txt` — 最小运行时依赖（由 `scripts/deploy.sh` 使用）。
+- **CI / 开发:** `requirements-dev.txt` — 通过 `-r requirements.txt` 包含所有生产依赖，外加
+  `pytest`、`httpx`。本地开发和测试请使用此文件。
+
 ## 本地运行与验证
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -r requirements.txt
+pip install -r requirements-dev.txt   # CI / 开发
+# 或: pip install -r requirements.txt # 仅生产依赖
 cp .env.example .env
 
 python -m pytest -q

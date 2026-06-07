@@ -39,6 +39,12 @@ tests/
 Runtime artifacts under `.venv/`, `data/raw/`, `data/clean/`, `reports/`,
 `logs/`, caches, and `.env` are ignored.
 
+## Dependencies
+
+- **Production / deploy:** `requirements.txt` — minimal runtime dependencies (used by `scripts/deploy.sh`).
+- **CI / dev:** `requirements-dev.txt` — includes `pytest`, `httpx`, and all production dependencies
+  via `-r requirements.txt`. Use this for local development and testing.
+
 ## Configuration
 
 Requires Python 3.11+.
@@ -46,7 +52,8 @@ Requires Python 3.11+.
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -r requirements.txt
+pip install -r requirements-dev.txt   # CI / dev
+# or: pip install -r requirements.txt # production only
 cp .env.example .env
 ```
 
