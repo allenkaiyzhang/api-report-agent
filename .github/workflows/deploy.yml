@@ -19,6 +19,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
+  contents: read
   actions: read
 
 jobs:
@@ -28,10 +29,12 @@ jobs:
       - name: Verify CI workflow succeeded for target commit
         env:
           TARGET_SHA: ${{ github.event.inputs.commit_sha || github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           echo "Checking CI status for commit: $TARGET_SHA"
-          CI_CONCLUSION=$(gh run list --workflow=CI --commit="$TARGET_SHA" --json status,conclusion --jq '[.[] | select(.status=="completed")] | .[0].conclusion // "not_found"' 2>/dev/null)
+          CI_CONCLUSION=$(gh run list --workflow=CI --commit="$TARGET_SHA" --json status,conclusion --jq '[.[] | select(.status=="completed")] | .[0].conclusion // "not_found"')
+          echo "CI conclusion for commit $TARGET_SHA: $CI_CONCLUSION"
           if [ "$CI_CONCLUSION" != "success" ]; then
             echo "ERROR: CI workflow has not passed for commit $TARGET_SHA (conclusion: ${CI_CONCLUSION:-not_found})" >&2
             exit 1
