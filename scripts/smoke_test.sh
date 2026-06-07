@@ -78,23 +78,21 @@ print(f'US market: open={s[0].is_open}')
 echo ""
 echo "--- Security Policy ---"
 run_test "Trading tools blocked" python -c "
-from clients.longbridge_mcp_client import LongbridgeMcpClient, _TRADING_TOOLS
-c = LongbridgeMcpClient(mcp_url='http://localhost:9999', mcp_token='test')
-for t in _TRADING_TOOLS:
-    try:
-        c._assert_allowed(t)
-        raise AssertionError(f'Tool {t} should be blocked')
-    except PermissionError:
-        pass
-print(f'All {len(_TRADING_TOOLS)} trading tools blocked')
+from app.policy.tool_policy import LongbridgeToolPolicy
+policy = LongbridgeToolPolicy()
+for t in policy.trading_tools:
+    result = policy.check_tool(t)
+    assert not result.allowed, f'Tool {t} should be blocked'
+print(f'All {len(policy.trading_tools)} trading tools blocked')
 "
 
 run_test "Account-read blocked by default" python -c "
-from clients.longbridge_mcp_client import LongbridgeMcpClient
-c = LongbridgeMcpClient(mcp_url='http://localhost:9999', mcp_token='test')
-assert not c.is_trading_enabled()
-assert not c.is_account_read_enabled()
-print('Trading=disabled, AccountRead=disabled')
+from app.policy.tool_policy import LongbridgeToolPolicy
+policy = LongbridgeToolPolicy(account_read_enabled=False)
+for t in policy.account_read_tools:
+    result = policy.check_tool(t)
+    assert not result.allowed, f'Account-read tool {t} should be blocked'
+print(f'All {len(policy.account_read_tools)} account-read tools blocked')
 "
 
 # --- Data pipeline ---
@@ -142,6 +140,8 @@ print(f'Report length: {len(report)} chars')
 "
 
 run_test "Daily close report" python -c "
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from clients.mock_market_data_client import MockMarketDataClient
 from core.mcp_collector import McpDataCollector
 from core.mcp_cleaner import McpDataCleaner
@@ -150,8 +150,12 @@ from core.mcp_report_generator import ReportGenerator
 
 c = MockMarketDataClient()
 dataset = McpDataCollector(c).collect(['QQQ', 'HSBC.US'], 'US', 'daily_close_report')
+dataset.market_status.is_open = False
+dataset.market_status.session = 'closed'
+dataset.market_status.current_session_close = '2026-06-05T16:00:00-04:00'
 dataset = McpDataCleaner().clean(dataset)
-dataset = McpDataValidator().validate(dataset)
+now = datetime(2026, 6, 5, 16, 30, tzinfo=ZoneInfo('America/New_York'))
+dataset = McpDataValidator(now_provider=lambda: now).validate(dataset)
 
 gen = ReportGenerator()
 report = gen.generate_daily_close_report(dataset)
@@ -212,7 +216,19 @@ print(f'Logged {len(runs)} runs')
 # --- Schema validation ---
 echo ""
 echo "--- Schema Validation ---"
-run_test "Schema validation" python -m pytest tests/test_schema_validation.py -q --tb=short 2>&1
+run_test "Schema validation" python -c "
+import jsonschema, json
+from pathlib import Path
+PROJECT_ROOT = Path('${PROJECT_DIR}')
+schema = json.loads((PROJECT_ROOT / 'config/schemas/quote.schema.json').read_text(encoding='utf-8'))
+jsonschema.validate({'symbol':'QQQ','market':'US','latest_price':445.20,'timestamp':'2026-06-06T10:00:00Z'}, schema)
+try:
+    jsonschema.validate({'symbol':'QQQ'}, schema)
+    raise SystemExit('Should have failed')
+except jsonschema.ValidationError:
+    pass
+print('Schema validation OK')
+"
 
 # --- Agent workflow ---
 echo ""

@@ -89,9 +89,23 @@ def test_tool_policy_trading_blocked():
 
 
 def test_tool_policy_account_read_disabled():
+    """Verify all account-read tools are blocked by default."""
     from app.policy.tool_policy import LongbridgeToolPolicy
     policy = LongbridgeToolPolicy(account_read_enabled=False)
+    # Explicitly list the tools that must be blocked by default
+    must_block = [
+        "account_balance",
+        "stock_positions",
+        "today_orders",
+        "history_orders",
+        "today_executions",
+        "history_executions",
+    ]
     for tool in policy.account_read_tools:
+        result = policy.check_tool(tool)
+        assert not result.allowed, f"Account-read tool {tool} should be blocked"
+    for tool in must_block:
+        assert tool in policy.account_read_tools, f"{tool} must be in account_read_tools"
         result = policy.check_tool(tool)
         assert not result.allowed, f"Account-read tool {tool} should be blocked"
 
