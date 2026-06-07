@@ -5,6 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+MCP_SERVICE_NAME="${MCP_SERVICE_NAME:-market-report-agent}"
 
 echo "============================================="
 echo "   ECS/VPS Post-Deploy Verification Script"
@@ -53,10 +54,15 @@ if [ -z "$MARKET_DATA_PROVIDER" ]; then
 fi
 
 echo -e "\n--- Systemd Service Status ---"
-systemctl status market-report-agent --no-pager || true
+if ! systemctl is-active --quiet "$MCP_SERVICE_NAME"; then
+  echo "ERROR: $MCP_SERVICE_NAME is not active" >&2
+  systemctl --no-pager --full status "$MCP_SERVICE_NAME" || true
+  exit 1
+fi
+systemctl status "$MCP_SERVICE_NAME" --no-pager || true
 
 echo -e "\n--- Recent Journald Logs ---"
-journalctl -u market-report-agent -n 100 --no-pager || true
+journalctl -u "$MCP_SERVICE_NAME" -n 100 --no-pager || true
 
 echo -e "\n--- Running Smoke Tests ---"
 python scripts/smoke_test.py

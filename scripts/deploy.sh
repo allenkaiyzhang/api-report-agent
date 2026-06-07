@@ -89,8 +89,12 @@ if [[ ! -x "$PYTHON" ]]; then
 fi
 
 echo "Installing pip and requirements..."
-"$PYTHON" -m pip install --upgrade pip -q
-"$PYTHON" -m pip install -r requirements.txt -q
+PIP_FLAGS=""
+if [ "${PIP_QUIET:-0}" = "1" ]; then
+  PIP_FLAGS="-q"
+fi
+"$PYTHON" -m pip install --upgrade pip $PIP_FLAGS
+"$PYTHON" -m pip install -r requirements.txt $PIP_FLAGS
 
 echo "============================================="
 echo "   [STAGE 4/6] Running Unit Tests (Optional)"

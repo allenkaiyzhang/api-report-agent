@@ -51,6 +51,9 @@ ACCOUNT_READ_ENABLED=false
 
 ## 部署与日志
 
+通过 GitHub Actions 的 "Deploy to ECS" 工作流（`workflow_dispatch`）手动触发部署，
+CD 会先验证目标 commit 的 CI 已通过，再远程执行部署脚本。
+
 ```bash
 sudo bash scripts/deploy.sh
 sudo systemctl enable --now market-report-agent
@@ -58,8 +61,15 @@ sudo systemctl status market-report-agent
 sudo journalctl -u market-report-agent -f
 ```
 
-`scripts/deploy.sh` 使用 venv + systemd，执行健康检查和 smoke test 后退出；
-关键步骤失败会返回非零状态。盘中调度和收盘报告使用市场本地日期，收盘报告
+`scripts/deploy.sh` 使用 venv + systemd，默认显示 pip install 完整输出（设
+`PIP_QUIET=1` 可切换安静模式），执行健康检查和 smoke test 后退出；
+关键步骤失败会返回非零状态。
+
+`scripts/post_deploy_verify.sh` 通过 `systemctl is-active` 校验服务运行状态，
+若服务 inactive/failed 则 exit 1；随后检查日志、运行 smoke test
+和 provider 健康检查。
+
+盘中调度和收盘报告使用市场本地日期，收盘报告
 必须通过交易日、已完成 session、延迟、状态和数据时间戳校验。
 
 ## 排障

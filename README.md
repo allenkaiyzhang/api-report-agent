@@ -100,7 +100,7 @@ This repository follows a multi-stage validation model designed to prevent envir
 
 1. **Windows Local = Fast Local Pre-check:** Fast local verification of codebase, unit tests, and smoke scenarios via `scripts/verify.py`.
 2. **GitHub Actions Ubuntu CI = Merge Gate:** Rigorously runs on every `push` and `pull_request` to verify cross-platform correctness under Ubuntu with Python 3.11 and 3.12, syntax-checks Bash deployment scripts, and validates systemd templates.
-3. **workflow_dispatch CD = Manual Release Gate:** A manually triggered deployment workflow in GitHub Actions that targets a specific commit SHA, performs network prechecks (DNS and HTTP connectivity to GitHub), enforces uncommitted working tree checks, checks out the exact SHA, and orchestrates remote updates.
+3. **workflow_dispatch CD = Manual Release Gate:** A manually triggered deployment workflow in GitHub Actions that first verifies the target commit's CI workflow has succeeded via the GitHub API, then deploys via SSH with network prechecks (DNS and HTTP connectivity to GitHub), uncommitted working tree checks, exact SHA checkout, and remote orchestration. The CD gate **refuses to deploy** any commit whose CI has not passed.
 4. **ECS/VPS Post-Deploy Verify = Production Gate:** Executes on the actual runtime server via `scripts/post_deploy_verify.sh` to verify the systemd unit, inspect log streams, run provider-specific health validation, and verify smoke tests.
 
 **Important Environment & Retrieval Rules:**
@@ -164,10 +164,15 @@ rendering can be checked without installing or restarting systemd:
 bash scripts/deploy.sh --dry-run
 ```
 
-`scripts/deploy.sh` installs dependencies, installs/restarts the rendered
+`scripts/deploy.sh` installs dependencies (default: verbose `pip install` output; set `PIP_QUIET=1` to suppress), installs/restarts the rendered
 `market-report-agent.service`, runs provider-aware health, then runs
 `scripts/smoke_test.py` with venv Python. Its shell fallback is invoked with
 `bash`, never Python. Critical failures exit non-zero.
+
+`scripts/post_deploy_verify.sh` checks the systemd service is running via
+`systemctl is-active` and exits non-zero if the service is inactive or failed.
+It then inspects journal logs, runs smoke tests, and performs a provider-aware
+health check.
 
 Systemd operations:
 
