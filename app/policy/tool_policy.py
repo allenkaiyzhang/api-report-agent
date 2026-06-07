@@ -4,7 +4,8 @@ Enforces:
 1. Trading/write tools are ALWAYS blocked.
 2. Account-read tools are disabled by default (require explicit config).
 3. Unknown tools are denied by default.
-4. Only explicitly allowed read-only market/fundamental tools pass.
+4. Only discovered and explicitly allowed read-only market tools pass.
+5. Production mode requires tool discovery — no unverified hardcoded mappings.
 """
 
 from __future__ import annotations
@@ -30,8 +31,8 @@ class PolicyResult:
 
 
 # ── Official Longbridge MCP tool names ───────────────────────────
-# These are the tool names discovered from the Longbridge official MCP.
-# They are NOT invented — they map to what the Longbridge Remote MCP exposes.
+# These are populated via tool discovery at runtime.
+# Hardcoded names below are for bootstrapping only.
 
 # Trading/write tools — ALWAYS blocked
 _TRADING_TOOLS: set[str] = {
@@ -65,35 +66,9 @@ _ACCOUNT_READ_TOOLS: set[str] = {
     "statement_list",
 }
 
-# Allowed read-only market/fundamental tools
-# Using official Longbridge MCP tool names where known,
-# with fallback aliases for discovery mapping
-_ALLOWED_MARKET_TOOLS: set[str] = {
-    # Official Longbridge MCP tool names
-    "candlesticks",
-    "trading_session",
-    # Additional allowed read-only tools (verified via tool discovery)
-    "get_stock_info",
-    "get_calc_indexes",
-    "get_watchlist",
-    "get_option_chain",
-    "get_option_snapshot",
-    "get_option_underlying_info",
-    "get_option_expiration_date",
-    # Quote/intraday may be discovered under various names
-    "get_stock_quote",
-    "get_intraday",
-}
-
-# Map internal operations to official Longbridge MCP tool names
-# This is populated/updated via tool discovery at runtime
-_DEFAULT_TOOL_MAP: dict[str, str] = {
-    "quote": "get_stock_quote",        # may be remapped after discovery
-    "candles": "candlesticks",
-    "market_status": "trading_session",
-    "intraday": "get_intraday",
-    "fundamentals": "get_stock_info",
-}
+_APPROVED_INTERNAL_OPERATIONS = frozenset(
+    {"quote", "candles", "intraday", "market_status", "fundamentals"}
+)
 
 
 class LongbridgeToolPolicy:
@@ -102,14 +77,15 @@ class LongbridgeToolPolicy:
     Rules (in order):
     1. Trading tools → always blocked
     2. Account-read tools → blocked unless account_read_enabled=True
-    3. Allowed market tools → allowed
+    3. Discovered+allowed market tools → allowed
     4. Unknown tools → blocked (default-deny)
     """
 
     def __init__(self, account_read_enabled: bool = False) -> None:
         self._account_read_enabled = account_read_enabled
-        self._tool_map: dict[str, str] = dict(_DEFAULT_TOOL_MAP)
+        self._tool_map: dict[str, str] = {}
         self._discovered_tools: set[str] = set()
+        self._allowed_market_tools: set[str] = set()
 
     @property
     def account_read_enabled(self) -> bool:
@@ -125,16 +101,25 @@ class LongbridgeToolPolicy:
 
     @property
     def allowed_market_tools(self) -> set[str]:
-        return frozenset(_ALLOWED_MARKET_TOOLS)
+        return frozenset(self._allowed_market_tools)
+
+    def get_discovered_tools(self) -> set[str]:
+        """Return the set of tools discovered at runtime."""
+        return frozenset(self._discovered_tools)
 
     def update_from_discovery(self, discovered_tool_names: list[str]) -> None:
         """Update tool map based on MCP tool discovery results.
 
         This maps internal operation names to the actual tool names
         discovered from the Longbridge MCP endpoint.
+
+        Unverified tool names (get_stock_quote, get_intraday) are NOT
+        in the default map — they must be discovered to be usable.
         """
         discovered = set(discovered_tool_names)
         self._discovered_tools = discovered
+        self._tool_map = {}
+        self._allowed_market_tools = set()
 
         # Map internal ops to discovered official names
         remap: dict[str, str] = {}
@@ -147,40 +132,49 @@ class LongbridgeToolPolicy:
         if "trading_session" in discovered:
             remap["market_status"] = "trading_session"
 
-        # stock_positions → account positions (if enabled)
-        if "stock_positions" in discovered:
-            remap["positions"] = "stock_positions"
-
-        # today_orders → orders (if enabled)
-        if "today_orders" in discovered:
-            remap["orders"] = "today_orders"
-
-        # Quote tool detection
-        for name in discovered:
-            if "quote" in name.lower() and "stock" in name.lower():
+        # Quote/intraday names are accepted only after discovery proves they exist.
+        for name in ("get_stock_quote", "quote"):
+            if name in discovered:
                 remap["quote"] = name
                 break
 
-        # Intraday detection
-        for name in discovered:
-            if "intraday" in name.lower():
+        # Intraday detection — must be discovered, no default fallback
+        for name in ("get_intraday", "intraday"):
+            if name in discovered:
                 remap["intraday"] = name
                 break
 
         # Stock info / fundamentals
-        for name in discovered:
-            if "stock_info" in name.lower() or "fundamental" in name.lower():
+        for name in ("get_stock_info", "fundamentals"):
+            if name in discovered:
                 remap["fundamentals"] = name
                 break
 
         self._tool_map.update(remap)
+        self._allowed_market_tools = {
+            tool
+            for operation, tool in self._tool_map.items()
+            if operation in _APPROVED_INTERNAL_OPERATIONS
+            and tool not in _TRADING_TOOLS
+            and tool not in _ACCOUNT_READ_TOOLS
+        }
 
     def get_mapped_tool(self, internal_name: str) -> str | None:
-        """Resolve an internal operation name to the actual MCP tool name."""
+        """Resolve an internal operation name to the actual MCP tool name.
+
+        Returns None if no mapping exists (tool not discovered/hardcoded).
+        """
         return self._tool_map.get(internal_name)
 
+    def has_mapping(self, internal_name: str) -> bool:
+        """Check whether an internal operation has a mapped tool."""
+        return internal_name in self._tool_map
+
     def check_tool(self, tool_name: str) -> PolicyResult:
-        """Evaluate whether a tool is allowed, and why."""
+        """Evaluate whether a tool is allowed, and why.
+
+        Checks in order: trading (blocked) → account-read → allowed market → unknown (denied).
+        """
         if tool_name in _TRADING_TOOLS:
             return PolicyResult(
                 allowed=False,
@@ -202,7 +196,7 @@ class LongbridgeToolPolicy:
                 reason=f"Account-read tool '{tool_name}' is disabled (set ACCOUNT_READ_ENABLED=true to enable)",
             )
 
-        if tool_name in _ALLOWED_MARKET_TOOLS:
+        if tool_name in self._allowed_market_tools:
             return PolicyResult(
                 allowed=True,
                 category=ToolCategory.ALLOWED_MARKET,
@@ -231,7 +225,7 @@ class LongbridgeToolPolicy:
             "account_read_tools_disabled": (
                 sorted(_ACCOUNT_READ_TOOLS) if not self._account_read_enabled else []
             ),
-            "allowed_market_tools": sorted(_ALLOWED_MARKET_TOOLS),
+            "allowed_market_tools": sorted(self._allowed_market_tools),
             "tool_map": dict(self._tool_map),
             "discovered_tools": sorted(self._discovered_tools),
             "default_deny_unknown": True,

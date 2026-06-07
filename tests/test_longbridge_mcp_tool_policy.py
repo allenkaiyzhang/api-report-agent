@@ -93,10 +93,9 @@ class TestLongbridgeToolPolicy(unittest.TestCase):
     # ── Allowed market tools ────────────────────────────────────
 
     def test_allowed_market_tools_list(self):
-        """Verify the allowed market tools list."""
+        """No market tool is allowed before discovery."""
         allowed = self.policy.allowed_market_tools
-        self.assertIn("candlesticks", allowed)
-        self.assertIn("trading_session", allowed)
+        self.assertEqual(allowed, frozenset())
 
     def test_allowed_market_tools_pass(self):
         for tool in self.policy.allowed_market_tools:
@@ -126,13 +125,18 @@ class TestLongbridgeToolPolicy(unittest.TestCase):
     # ── Tool mapping ────────────────────────────────────────────
 
     def test_default_tool_map(self):
-        """Default tool map has expected internal→official name mappings."""
-        self.assertEqual(self.policy.get_mapped_tool("candles"), "candlesticks")
-        self.assertEqual(self.policy.get_mapped_tool("market_status"), "trading_session")
-        self.assertEqual(self.policy.get_mapped_tool("fundamentals"), "get_stock_info")
+        """Default tool map has expected internal→official name mappings.
+
+        Note: quote and intraday have NO default mapping — they must be discovered.
+        """
+        self.assertIsNone(self.policy.get_mapped_tool("candles"))
+        self.assertIsNone(self.policy.get_mapped_tool("market_status"))
+        self.assertIsNone(self.policy.get_mapped_tool("fundamentals"))
+        self.assertIsNone(self.policy.get_mapped_tool("quote"))
+        self.assertIsNone(self.policy.get_mapped_tool("intraday"))
 
     def test_update_from_discovery(self):
-        """Tool discovery updates the mapping."""
+        """Tool discovery updates the mapping for quote/intraday."""
         self.policy.update_from_discovery([
             "candlesticks",
             "trading_session",
@@ -143,10 +147,21 @@ class TestLongbridgeToolPolicy(unittest.TestCase):
         self.assertEqual(self.policy.get_mapped_tool("market_status"), "trading_session")
         self.assertEqual(self.policy.get_mapped_tool("quote"), "get_stock_quote")
         self.assertEqual(self.policy.get_mapped_tool("intraday"), "get_intraday")
+        self.assertTrue(self.policy.is_allowed("candlesticks"))
+        self.assertTrue(self.policy.is_allowed("trading_session"))
 
-    def test_unknown_internal_op_returns_none(self):
-        """An internal op with no mapping returns None."""
-        self.assertIsNone(self.policy.get_mapped_tool("nonexistent_op"))
+    def test_missing_discovered_quote_returns_none(self):
+        """Without discovery, quote has no mapping."""
+        self.assertIsNone(self.policy.get_mapped_tool("quote"))
+        self.assertFalse(self.policy.has_mapping("quote"))
+
+    def test_discovery_populates_discovered_set(self):
+        """Discovered tools should be tracked."""
+        self.policy.update_from_discovery(["candlesticks", "trading_session", "get_stock_quote"])
+        discovered = self.policy.get_discovered_tools()
+        self.assertIn("candlesticks", discovered)
+        self.assertIn("get_stock_quote", discovered)
+        self.assertEqual(len(discovered), 3)
 
     # ── Policy metadata ─────────────────────────────────────────
 

@@ -1,7 +1,7 @@
 """LongbridgeMcpClient — controlled adapter for Longbridge Remote MCP.
 
 Connects to the Longbridge official Remote MCP endpoint via Streamable HTTP.
-Uses OAuth 2.1 client authorization.
+Uses an externally-supplied authorized MCP transport (not a full OAuth 2.1 client).
 Blocks trading tools in code (not just in prompts).
 Account-read tools are disabled by default and require explicit config.
 Default-deny for unknown tools.
@@ -10,6 +10,14 @@ Reference:
   Longbridge official MCP: https://open.longbridge.com/docs/mcp
   Global endpoint: https://mcp.longbridge.com
   Mainland China endpoint: https://mcp.longbridge.cn
+
+Session/auth model:
+  This adapter requires an already-authorized MCP session or transport.
+  The LONGBRIDGE_MCP_AUTH_HEADER env var provides a pre-obtained authorization
+  header value (e.g. "Bearer <token>"). This is NOT a full OAuth 2.1 client
+  implementation — it is an external-session model where the auth is obtained
+  out-of-band. A future real OAuth client can be plugged in via the same
+  transport seam.
 """
 
 from __future__ import annotations
@@ -36,6 +44,10 @@ logger = logging.getLogger(__name__)
 # ── Default MCP endpoint ─────────────────────────────────────────
 _DEFAULT_MCP_URL = "https://mcp.longbridge.com"
 
+_REQUIRED_INTERNAL_OPERATIONS = frozenset(
+    {"quote", "candles", "intraday", "market_status"}
+)
+
 
 class LongbridgeMcpClient(MarketDataClient):
     """Adapter that wraps Longbridge Remote MCP with tool blocking.
@@ -45,28 +57,32 @@ class LongbridgeMcpClient(MarketDataClient):
 
     Configuration (env vars):
         LONGBRIDGE_MCP_URL — MCP endpoint URL (default: https://mcp.longbridge.com)
-        LONGBRIDGE_MCP_OAUTH_TOKEN — OAuth 2.1 token for MCP
+        LONGBRIDGE_MCP_AUTH_HEADER — Authorization header value for MCP transport
+            (e.g. "Bearer <token>"). This is a pre-obtained auth header, not
+            a full OAuth 2.1 client flow. Obtain the token through Longbridge's
+            official auth mechanism before starting this service.
         ACCOUNT_READ_ENABLED — set "true" to enable account-read tools
     """
 
     def __init__(
         self,
         mcp_url: str | None = None,
-        oauth_token: str | None = None,
+        auth_header: str | None = None,
         account_read_enabled: bool = False,
     ) -> None:
         self._mcp_url = mcp_url or os.getenv("LONGBRIDGE_MCP_URL", "") or _DEFAULT_MCP_URL
-        self._oauth_token = oauth_token or os.getenv("LONGBRIDGE_MCP_OAUTH_TOKEN", "")
+        self._auth_header = auth_header or os.getenv("LONGBRIDGE_MCP_AUTH_HEADER", "")
         self._account_read_enabled = account_read_enabled or (
             os.getenv("ACCOUNT_READ_ENABLED", "false").lower() == "true"
         )
 
-        # Tool policy (default-deny)
+        # Tool policy (default-deny, discovery-first)
         self._policy = LongbridgeToolPolicy(account_read_enabled=self._account_read_enabled)
 
         # MCP session state
         self._connected = False
         self._discovery_done = False
+        self._discovery_error: str | None = None
         self._session_error: str | None = None
 
         # Raw response cache (preserve original provider data)
@@ -92,55 +108,99 @@ class LongbridgeMcpClient(MarketDataClient):
         """Return the raw provider response for a tool call (for audit)."""
         return self._last_raw_responses.get(tool_name)
 
-    # ── Tool discovery ───────────────────────────────────────────
+    # ── Tool discovery (mandatory in production) ─────────────────
 
     def discover_tools(self) -> list[str]:
         """List available tools from the Longbridge MCP endpoint.
 
-        Runs tool discovery if not yet performed.
+        In real provider mode, discovery is mandatory — failure blocks
+        all data operations.
+
         Returns the list of discovered tool names.
+        Raises RuntimeError if discovery fails and no fallback tools exist.
         """
         if self._discovery_done:
-            return sorted(self._policy._discovered_tools)  # type: ignore[attr-defined]
+            if self._discovery_error:
+                raise RuntimeError(self._discovery_error)
+            return sorted(self._policy.get_discovered_tools())
 
         self._ensure_session()
 
         try:
-            result = self._call_mcp_raw("tools/list", {})
+            result = self._list_tools_raw()
             tools = self._extract_tool_names(result)
             if tools:
                 self._policy.update_from_discovery(tools)
                 logger.info("Discovered %d Longbridge MCP tools: %s", len(tools), tools)
+
+                missing_required = {
+                    operation
+                    for operation in _REQUIRED_INTERNAL_OPERATIONS
+                    if not self._policy.has_mapping(operation)
+                }
+                if missing_required:
+                    self._discovery_error = (
+                        f"Required MCP operations not mapped from discovered tools: "
+                        f"{', '.join(sorted(missing_required))}. Discovered: {sorted(tools)}"
+                    )
+                    logger.error(self._discovery_error)
             else:
-                logger.warning("Tool discovery returned no tools; using default mapping")
+                self._discovery_error = (
+                    "Tool discovery returned no tools from Longbridge MCP endpoint. "
+                    "Cannot proceed in production mode without discovered tools."
+                )
+                logger.error(self._discovery_error)
         except Exception as exc:
-            logger.warning("Tool discovery failed: %s; using default tool mapping", exc)
+            self._discovery_error = (
+                f"Tool discovery failed: {exc}. "
+                "Cannot proceed in production mode without tool discovery."
+            )
+            logger.error(self._discovery_error)
 
         self._discovery_done = True
-        return sorted(self._policy._discovered_tools)  # type: ignore[attr-defined]
+
+        if self._discovery_error:
+            raise RuntimeError(self._discovery_error)
+
+        return sorted(self._policy.get_discovered_tools())
 
     def _extract_tool_names(self, response: Any) -> list[str]:
         """Extract tool names from a tools/list response."""
-        data = self._unwrap_content(response)
+        data = {"tools": getattr(response, "tools")} if hasattr(response, "tools") else self._unwrap_content(response)
         if isinstance(data, dict):
             tools = data.get("tools", [])
             if isinstance(tools, list):
-                return [t.get("name", "") for t in tools if isinstance(t, dict) and t.get("name")]
+                names: list[str] = []
+                for tool in tools:
+                    if isinstance(tool, dict) and tool.get("name"):
+                        names.append(str(tool["name"]))
+                    elif getattr(tool, "name", None):
+                        names.append(str(tool.name))
+                return names
         return []
+
+    def is_discovery_ok(self) -> bool:
+        """Return True if tool discovery succeeded."""
+        return self._discovery_done and self._discovery_error is None
+
+    def get_discovery_error(self) -> str | None:
+        """Return discovery error message if any."""
+        return self._discovery_error
 
     # ── MCP transport ────────────────────────────────────────────
 
     def _ensure_session(self) -> None:
-        """Validate that we have a usable MCP session / auth.
+        """Validate that we have a usable MCP auth header.
 
         Does NOT actually connect — that happens on first tool call.
         This validates that required configuration is present.
         """
-        if not self._oauth_token:
+        if not self._auth_header:
             self._session_error = (
-                "Longbridge MCP OAuth token not configured. "
-                "Set LONGBRIDGE_MCP_OAUTH_TOKEN environment variable. "
-                "See https://open.longbridge.com/docs/mcp for OAuth setup."
+                "Longbridge MCP auth header not configured. "
+                "Set LONGBRIDGE_MCP_AUTH_HEADER environment variable "
+                "(e.g. 'Bearer <token>'). "
+                "See https://open.longbridge.com/docs/mcp for auth setup."
             )
             raise RuntimeError(self._session_error)
 
@@ -155,25 +215,22 @@ class LongbridgeMcpClient(MarketDataClient):
             import asyncio
             from mcp import ClientSession
 
-            # Try Streamable HTTP transport first (preferred for Longbridge official MCP)
             async def _call() -> Any:
                 try:
-                    # Attempt Streamable HTTP transport (MCP SDK >= 1.0)
                     from mcp.client.streamable_http import streamablehttp_client
                     async with streamablehttp_client(
                         url=self._mcp_url,
-                        headers={"Authorization": f"Bearer {self._oauth_token}"},
+                        headers={"Authorization": self._auth_header},
                     ) as (read, write):
                         async with ClientSession(read, write) as session:
                             await session.initialize()
                             result = await session.call_tool(tool_name, arguments=arguments)
                             return result
                 except (ImportError, AttributeError):
-                    # Fall back to SSE transport
                     from mcp.client.sse import sse_client
                     async with sse_client(
                         url=self._mcp_url,
-                        headers={"Authorization": f"Bearer {self._oauth_token}"},
+                        headers={"Authorization": self._auth_header},
                     ) as (read, write):
                         async with ClientSession(read, write) as session:
                             await session.initialize()
@@ -190,6 +247,37 @@ class LongbridgeMcpClient(MarketDataClient):
             logger.error("MCP tool '%s' failed: %s", tool_name, exc)
             raise
 
+    def _list_tools_raw(self) -> Any:
+        """Use the MCP protocol list_tools operation, not an invented tool call."""
+        self._ensure_session()
+        try:
+            import asyncio
+            from mcp import ClientSession
+
+            async def _list() -> Any:
+                try:
+                    from mcp.client.streamable_http import streamablehttp_client
+                    async with streamablehttp_client(
+                        url=self._mcp_url,
+                        headers={"Authorization": self._auth_header},
+                    ) as (read, write):
+                        async with ClientSession(read, write) as session:
+                            await session.initialize()
+                            return await session.list_tools()
+                except (ImportError, AttributeError):
+                    from mcp.client.sse import sse_client
+                    async with sse_client(
+                        url=self._mcp_url,
+                        headers={"Authorization": self._auth_header},
+                    ) as (read, write):
+                        async with ClientSession(read, write) as session:
+                            await session.initialize()
+                            return await session.list_tools()
+
+            return asyncio.run(_list())
+        except ImportError as exc:
+            raise RuntimeError("MCP SDK not installed. Install with: pip install mcp>=1.0.0") from exc
+
     def _call_mcp_tool(self, internal_op: str, arguments: dict[str, Any]) -> Any:
         """Call a Longbridge MCP tool with policy enforcement.
 
@@ -204,7 +292,7 @@ class LongbridgeMcpClient(MarketDataClient):
             PermissionError: If the tool is blocked by policy
             RuntimeError: If MCP is not configured or call fails
         """
-        # Resolve internal op to actual tool name
+        self.discover_tools()
         actual_tool = self._policy.get_mapped_tool(internal_op)
         if not actual_tool:
             raise RuntimeError(
@@ -223,13 +311,14 @@ class LongbridgeMcpClient(MarketDataClient):
 
     def health_check(self) -> dict[str, Any]:
         """Check connectivity and return health status."""
-        # Check if OAuth is configured
-        if not self._oauth_token:
+        # Check if auth is configured
+        if not self._auth_header:
             return {
                 "ok": False,
                 "provider": "longbridge_mcp",
                 "status": "not_configured",
-                "error": "LONGBRIDGE_MCP_OAUTH_TOKEN not set",
+                "error": "LONGBRIDGE_MCP_AUTH_HEADER not set",
+                "mcp_endpoint": self._mcp_url,
             }
 
         if self._session_error and not self._connected:
@@ -238,16 +327,31 @@ class LongbridgeMcpClient(MarketDataClient):
                 "provider": "longbridge_mcp",
                 "status": "session_error",
                 "error": self._session_error,
+                "mcp_endpoint": self._mcp_url,
+            }
+
+        # Check discovery
+        try:
+            self.discover_tools()
+        except Exception as exc:
+            return {
+                "ok": False,
+                "provider": "longbridge_mcp",
+                "status": "discovery_failed",
+                "error": str(exc)[:300],
+                "mcp_endpoint": self._mcp_url,
             }
 
         try:
-            self._call_mcp_raw("trading_session", {"market": "US"})
+            self._call_mcp_tool("market_status", {"market": "US"})
             self._connected = True
             return {
                 "ok": True,
                 "provider": "longbridge_mcp",
                 "status": "connected",
-                "endpoint": self._mcp_url,
+                "mcp_endpoint": self._mcp_url,
+                "discovery": "ok",
+                "discovery_detail": None,
             }
         except Exception as exc:
             return {
@@ -255,73 +359,55 @@ class LongbridgeMcpClient(MarketDataClient):
                 "provider": "longbridge_mcp",
                 "status": "connection_failed",
                 "error": str(exc)[:300],
-                "endpoint": self._mcp_url,
+                "mcp_endpoint": self._mcp_url,
+                "discovery": "ok",
+                "discovery_detail": None,
             }
 
     # ── MarketDataClient implementation ──────────────────────────
 
     def get_quotes(self, symbols: list[str]) -> list[Quote]:
+        self.discover_tools()
         results: list[Quote] = []
         for symbol in symbols:
-            try:
-                raw = self._call_mcp_tool("quote", {"symbols": [symbol]})
-                results.extend(self._parse_quotes(raw, symbol))
-            except PermissionError:
-                raise
-            except Exception as exc:
-                logger.error("Quote fetch failed for %s: %s", symbol, exc)
+            raw = self._call_mcp_tool("quote", {"symbols": [symbol]})
+            results.extend(self._parse_quotes(raw, symbol))
         return results
 
     def get_candles(self, symbols: list[str], period: str = "day", count: int = 20) -> list[Candle]:
+        self.discover_tools()
         results: list[Candle] = []
         for symbol in symbols:
-            try:
-                raw = self._call_mcp_tool("candles", {
-                    "symbol": symbol,
-                    "period": period,
-                    "count": count,
-                })
-                results.extend(self._parse_candles(raw, symbol))
-            except PermissionError:
-                raise
-            except Exception as exc:
-                logger.error("Candles fetch failed for %s: %s", symbol, exc)
+            raw = self._call_mcp_tool("candles", {
+                "symbol": symbol,
+                "period": period,
+                "count": count,
+            })
+            results.extend(self._parse_candles(raw, symbol))
         return results
 
     def get_intraday(self, symbols: list[str]) -> list[IntradayPoint]:
+        self.discover_tools()
         results: list[IntradayPoint] = []
         for symbol in symbols:
-            try:
-                raw = self._call_mcp_tool("intraday", {"symbol": symbol})
-                results.extend(self._parse_intraday(raw, symbol))
-            except PermissionError:
-                raise
-            except Exception as exc:
-                logger.error("Intraday fetch failed for %s: %s", symbol, exc)
+            raw = self._call_mcp_tool("intraday", {"symbol": symbol})
+            results.extend(self._parse_intraday(raw, symbol))
         return results
 
     def get_market_status(self, markets: list[str]) -> list[MarketStatusInfo]:
+        self.discover_tools()
         results: list[MarketStatusInfo] = []
         for market in markets:
-            try:
-                raw = self._call_mcp_tool("market_status", {"market": market})
-                results.append(self._parse_market_status(raw, market))
-            except PermissionError:
-                raise
-            except Exception as exc:
-                logger.error("Market status fetch failed for %s: %s", market, exc)
+            raw = self._call_mcp_tool("market_status", {"market": market})
+            results.append(self._parse_market_status(raw, market))
         return results
 
     def get_fundamentals(self, symbols: list[str]) -> list[FundamentalData]:
+        self.discover_tools()
         results: list[FundamentalData] = []
         for symbol in symbols:
-            try:
-                raw = self._call_mcp_tool("fundamentals", {"symbols": [symbol]})
-                results.extend(self._parse_fundamentals(raw, symbol))
-            except PermissionError:
-                raise
-            except Exception as exc:
-                logger.error("Fundamental fetch failed for %s: %s", symbol, exc)
+            raw = self._call_mcp_tool("fundamentals", {"symbols": [symbol]})
+            results.extend(self._parse_fundamentals(raw, symbol))
         return results
 
     # ── Parsers ──────────────────────────────────────────────────
@@ -412,6 +498,9 @@ class LongbridgeMcpClient(MarketDataClient):
             market=market,
             is_open=data.get("is_open", False) in (True, "true", "1"),
             session=str(data.get("session", "closed")),
+            current_session_open=str(data.get("current_session_open", "")),
+            current_session_close=str(data.get("current_session_close", "")),
+            last_close=str(data.get("last_close", "")),
             next_open=str(data.get("next_open", "")),
             next_close=str(data.get("next_close", "")),
             timestamp=str(data.get("timestamp", datetime.now(timezone.utc).isoformat())),

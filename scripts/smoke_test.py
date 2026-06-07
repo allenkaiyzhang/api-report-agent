@@ -166,16 +166,14 @@ def test_intraday_brief():
 
 
 def test_daily_close_report():
-    from clients.mock_market_data_client import MockMarketDataClient
-    from core.mcp_collector import McpDataCollector
-    from core.mcp_cleaner import McpDataCleaner
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
     from core.mcp_validator import McpDataValidator
     from core.mcp_report_generator import ReportGenerator
 
-    c = MockMarketDataClient()
-    dataset = McpDataCollector(c).collect(["QQQ", "HSBC.US"], "US", "daily_close_report")
-    dataset = McpDataCleaner().clean(dataset)
-    dataset = McpDataValidator().validate(dataset)
+    now = datetime(2026, 6, 5, 16, 30, tzinfo=ZoneInfo("America/New_York"))
+    dataset = _valid_daily_close_dataset()
+    dataset = McpDataValidator(now_provider=lambda: now).validate(dataset)
 
     gen = ReportGenerator()
     report = gen.generate_daily_close_report(dataset)
@@ -302,35 +300,39 @@ def test_market_status_schema():
 
 
 def test_longbridge_client_no_oauth_fails():
-    """LongbridgeMcpClient without OAuth should fail health check."""
+    """LongbridgeMcpClient without auth should fail health check."""
     from clients.longbridge_mcp_client import LongbridgeMcpClient
     # Remove env vars
-    old_token = os.environ.pop("LONGBRIDGE_MCP_OAUTH_TOKEN", None)
+    old_auth = os.environ.pop("LONGBRIDGE_MCP_AUTH_HEADER", None)
     try:
-        client = LongbridgeMcpClient(mcp_url="https://mcp.longbridge.com", oauth_token="")
+        client = LongbridgeMcpClient(mcp_url="https://mcp.longbridge.com", auth_header="")
         h = client.health_check()
-        assert not h["ok"], f"Should fail without OAuth, got: {h}"
+        assert not h["ok"], f"Should fail without auth, got: {h}"
         assert h["status"] == "not_configured"
     finally:
-        if old_token:
-            os.environ["LONGBRIDGE_MCP_OAUTH_TOKEN"] = old_token
+        if old_auth:
+            os.environ["LONGBRIDGE_MCP_AUTH_HEADER"] = old_auth
 
 
 def test_validation_intraday_blocked_when_closed():
     """Intraday report should be blocked when market is closed."""
+    from datetime import datetime, timezone
     from clients.market_data_client import MarketReportDataset, MarketStatusInfo, Quote
     from core.mcp_validator import McpDataValidator
 
-    status = MarketStatusInfo(market="US", is_open=False, session="closed")
+    now_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    friday_ts = "2026-06-05T10:00:00Z"  # Friday (not weekend)
+    status = MarketStatusInfo(market="US", is_open=False, session="closed",
+                              timestamp=friday_ts)
     quotes = [Quote(symbol="QQQ", market="US", latest_price=100.0, previous_close=100.0,
                     change_percent=0.0, open=100.0, high=100.0, low=100.0,
                     volume=1000, turnover=100000.0, bid=99.0, ask=101.0,
                     trade_status="normal", currency="USD",
-                    timestamp="2026-06-06T10:00:00Z", source="mock")]
+                    timestamp=now_ts, source="mock")]
     dataset = MarketReportDataset(
         run_id="test", report_type="intraday_brief", market="US",
         symbols=["QQQ"], quotes=quotes, market_status=status,
-        collected_at="2026-06-06T10:00:00Z",
+        collected_at=now_ts,
     )
     validator = McpDataValidator()
     validated = validator.validate(dataset)
@@ -340,24 +342,51 @@ def test_validation_intraday_blocked_when_closed():
 
 def test_validation_daily_close_allowed_after_close():
     """Daily close report should be allowed when market is closed."""
-    from clients.market_data_client import MarketReportDataset, MarketStatusInfo, Quote
+    from datetime import datetime, timezone
+    from clients.market_data_client import MarketReportDataset, MarketStatusInfo, Quote, Candle, IntradayPoint
     from core.mcp_validator import McpDataValidator
 
-    status = MarketStatusInfo(market="US", is_open=False, session="closed",
-                              timestamp="2026-06-05T16:30:00Z")
-    quotes = [Quote(symbol="QQQ", market="US", latest_price=100.0, previous_close=100.0,
-                    change_percent=0.0, open=100.0, high=100.0, low=100.0,
-                    volume=1000, turnover=100000.0, bid=99.0, ask=101.0,
-                    trade_status="normal", currency="USD",
-                    timestamp="2026-06-05T16:00:00Z", source="mock")]
-    dataset = MarketReportDataset(
-        run_id="test", report_type="daily_close_report", market="US",
-        symbols=["QQQ"], quotes=quotes, market_status=status,
-        collected_at="2026-06-05T16:30:00Z",
-    )
-    validator = McpDataValidator()
+    from zoneinfo import ZoneInfo
+    now = datetime(2026, 6, 5, 16, 30, tzinfo=ZoneInfo("America/New_York"))
+    dataset = _valid_daily_close_dataset()
+    validator = McpDataValidator(now_provider=lambda: now)
     validated = validator.validate(dataset)
     assert validated.validated, f"Should pass: {validated.validation_errors}"
+
+
+def _valid_daily_close_dataset():
+    from clients.market_data_client import (
+        Candle, IntradayPoint, MarketReportDataset, MarketStatusInfo, Quote,
+    )
+
+    data_ts = "2026-06-05T16:20:00-04:00"
+    status = MarketStatusInfo(
+        market="US",
+        is_open=False,
+        session="closed",
+        current_session_close="2026-06-05T16:00:00-04:00",
+        timestamp="2026-06-05T16:30:00-04:00",
+    )
+    quote = Quote(
+        symbol="QQQ", market="US", latest_price=100.0, previous_close=99.0,
+        change_percent=1.01, open=99.0, high=101.0, low=98.0, volume=1000,
+        turnover=100000.0, bid=99.9, ask=100.1, trade_status="normal",
+        currency="USD", timestamp=data_ts, source="mock",
+    )
+    candle = Candle(
+        symbol="QQQ", market="US", close=100.0, open=99.0, low=98.0,
+        high=101.0, volume=1000, turnover=100000.0,
+        timestamp="2026-06-05", trade_session="regular", source="mock",
+    )
+    point = IntradayPoint(
+        symbol="QQQ", market="US", price=100.0, volume=500, turnover=50000.0,
+        timestamp=data_ts, source="mock",
+    )
+    return MarketReportDataset(
+        run_id="daily-smoke", report_type="daily_close_report", market="US",
+        symbols=["QQQ"], quotes=[quote], candles=[candle], intraday=[point],
+        market_status=status, collected_at=data_ts,
+    )
 
 
 def test_scheduler_dedup_key():

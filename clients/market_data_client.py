@@ -109,6 +109,9 @@ class MarketStatusInfo:
     market: str
     is_open: bool
     session: str
+    current_session_open: str | None = None
+    current_session_close: str | None = None
+    last_close: str | None = None
     next_open: str | None = None
     next_close: str | None = None
     timestamp: str = ""
@@ -119,6 +122,9 @@ class MarketStatusInfo:
             "market": self.market,
             "is_open": self.is_open,
             "session": self.session,
+            "current_session_open": self.current_session_open,
+            "current_session_close": self.current_session_close,
+            "last_close": self.last_close,
             "next_open": self.next_open,
             "next_close": self.next_close,
             "timestamp": self.timestamp,

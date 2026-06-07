@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from clients.market_data_client import (
     MarketDataClient,
@@ -21,6 +22,12 @@ from clients.market_data_client import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_RAW_DIR = "data/raw"
+_MARKET_TIMEZONES = {
+    "US": "America/New_York",
+    "HK": "Asia/Hong_Kong",
+    "CN": "Asia/Shanghai",
+    "JP": "Asia/Tokyo",
+}
 
 
 class McpDataCollector:
@@ -59,6 +66,7 @@ class McpDataCollector:
             symbols=symbols,
             collected_at=collected_at,
         )
+        collection_errors: list[str] = []
 
         # ── Quotes ───────────────────────────────────────────────
         try:
@@ -66,6 +74,7 @@ class McpDataCollector:
             logger.info("Collected %d quotes for %s", len(dataset.quotes), market)
         except Exception as exc:
             logger.error("Quote collection failed for %s: %s", market, exc)
+            collection_errors.append(f"quotes: {exc}")
 
         # ── Candles ──────────────────────────────────────────────
         try:
@@ -73,6 +82,7 @@ class McpDataCollector:
             logger.info("Collected %d candles for %s", len(dataset.candles), market)
         except Exception as exc:
             logger.error("Candle collection failed for %s: %s", market, exc)
+            collection_errors.append(f"candles: {exc}")
 
         # ── Intraday ─────────────────────────────────────────────
         try:
@@ -80,6 +90,7 @@ class McpDataCollector:
             logger.info("Collected %d intraday points for %s", len(dataset.intraday), market)
         except Exception as exc:
             logger.error("Intraday collection failed for %s: %s", market, exc)
+            collection_errors.append(f"intraday: {exc}")
 
         # ── Market status ────────────────────────────────────────
         try:
@@ -88,6 +99,7 @@ class McpDataCollector:
                 dataset.market_status = statuses[0]
         except Exception as exc:
             logger.error("Market status collection failed for %s: %s", market, exc)
+            collection_errors.append(f"market_status: {exc}")
 
         # ── Fundamentals (optional) ──────────────────────────────
         if include_fundamentals:
@@ -95,6 +107,10 @@ class McpDataCollector:
                 dataset.fundamentals = self._client.get_fundamentals(symbols)
             except Exception as exc:
                 logger.error("Fundamentals collection failed: %s", exc)
+                collection_errors.append(f"fundamentals: {exc}")
+
+        if collection_errors:
+            raise RuntimeError("Market data collection failed: " + "; ".join(collection_errors))
 
         # ── Save raw snapshot ────────────────────────────────────
         self._save_raw(dataset)
@@ -103,7 +119,8 @@ class McpDataCollector:
 
     def _save_raw(self, dataset: MarketReportDataset) -> None:
         """Append raw dataset as JSONL to data/raw/{market}/{date}/collection.jsonl."""
-        trading_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        market_tz = ZoneInfo(_MARKET_TIMEZONES.get(dataset.market.upper(), "UTC"))
+        trading_date = datetime.now(timezone.utc).astimezone(market_tz).strftime("%Y-%m-%d")
         output_dir = self._raw_dir / dataset.market / trading_date
         output_dir.mkdir(parents=True, exist_ok=True)
         output_file = output_dir / "collection.jsonl"

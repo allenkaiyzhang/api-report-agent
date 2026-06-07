@@ -32,7 +32,7 @@ class TestMarketDataClientInterface(unittest.TestCase):
     def test_longbridge_client_implements_interface(self):
         client = LongbridgeMcpClient(
             mcp_url="https://mcp.longbridge.com",
-            oauth_token="test-token",
+            auth_header="test-token",
         )
         self.assertIsInstance(client, MarketDataClient)
         self.assertEqual(client.provider_name, "longbridge_mcp")
@@ -101,39 +101,39 @@ class TestMockMarketDataClient(unittest.TestCase):
 class TestLongbridgeMcpClient(unittest.TestCase):
     """Verify LongbridgeMcpClient behavior."""
 
-    def test_no_oauth_fails_health_check(self):
-        """Health check should fail without OAuth token."""
-        old_token = os.environ.pop("LONGBRIDGE_MCP_OAUTH_TOKEN", None)
+    def test_no_auth_fails_health_check(self):
+        """Health check should fail without auth header."""
+        old_auth = os.environ.pop("LONGBRIDGE_MCP_AUTH_HEADER", None)
         try:
             client = LongbridgeMcpClient(
                 mcp_url="https://mcp.longbridge.com",
-                oauth_token="",
+                auth_header="",
             )
             h = client.health_check()
             self.assertFalse(h["ok"])
             self.assertEqual(h["status"], "not_configured")
         finally:
-            if old_token:
-                os.environ["LONGBRIDGE_MCP_OAUTH_TOKEN"] = old_token
+            if old_auth:
+                os.environ["LONGBRIDGE_MCP_AUTH_HEADER"] = old_auth
 
     def test_trading_always_disabled(self):
         client = LongbridgeMcpClient(
             mcp_url="https://mcp.longbridge.com",
-            oauth_token="test",
+            auth_header="test",
         )
         self.assertFalse(client.is_trading_enabled())
 
     def test_account_read_disabled_by_default(self):
         client = LongbridgeMcpClient(
             mcp_url="https://mcp.longbridge.com",
-            oauth_token="test",
+            auth_header="test",
         )
         self.assertFalse(client.is_account_read_enabled())
 
     def test_policy_blocks_trading_tools(self):
         client = LongbridgeMcpClient(
             mcp_url="https://mcp.longbridge.com",
-            oauth_token="test",
+            auth_header="test",
         )
         for tool in client.policy.trading_tools:
             with self.assertRaises(PermissionError):
@@ -142,18 +142,19 @@ class TestLongbridgeMcpClient(unittest.TestCase):
     def test_policy_blocks_unknown_tools(self):
         client = LongbridgeMcpClient(
             mcp_url="https://mcp.longbridge.com",
-            oauth_token="test",
+            auth_header="test",
         )
         self.assertFalse(client.policy.is_allowed("invented_tool"))
 
-    def test_tool_discovery_defaults(self):
+    def test_tool_discovery_has_no_defaults(self):
         client = LongbridgeMcpClient(
             mcp_url="https://mcp.longbridge.com",
-            oauth_token="test",
+            auth_header="test",
         )
-        # Default mapping should work
-        self.assertEqual(client.policy.get_mapped_tool("candles"), "candlesticks")
-        self.assertEqual(client.policy.get_mapped_tool("market_status"), "trading_session")
+        self.assertIsNone(client.policy.get_mapped_tool("candles"))
+        self.assertIsNone(client.policy.get_mapped_tool("market_status"))
+        self.assertIsNone(client.policy.get_mapped_tool("quote"))
+        self.assertIsNone(client.policy.get_mapped_tool("intraday"))
 
 
 class TestMarketReportDataset(unittest.TestCase):

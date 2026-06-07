@@ -21,6 +21,11 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 
 def run_health(provider: str | None = None) -> dict:
+    env_file = _PROJECT_ROOT / ".env"
+    if env_file.exists():
+        from dotenv import load_dotenv
+        load_dotenv(env_file)
+
     results = {
         "status": "ok",
         "service": "market-report-agent",
@@ -28,41 +33,43 @@ def run_health(provider: str | None = None) -> dict:
         "checks": {},
     }
 
-    # 1. Mock client
-    try:
-        from clients.mock_market_data_client import MockMarketDataClient
-        client = MockMarketDataClient()
-        h = client.health_check()
-        results["checks"]["mock_client"] = {"ok": h["ok"], "detail": h.get("detail", "")}
-    except Exception as exc:
-        results["checks"]["mock_client"] = {"ok": False, "error": str(exc)}
-        results["status"] = "degraded"
-
-    # 2. Longbridge MCP check
-    mcp_url = os.getenv("LONGBRIDGE_MCP_URL", "")
-    mcp_token = os.getenv("LONGBRIDGE_MCP_OAUTH_TOKEN", "")
-
     effective_provider = provider or os.getenv("MARKET_DATA_PROVIDER", "")
+    if not effective_provider and os.getenv("APP_ENV") == "test":
+        effective_provider = "mock"
 
-    if effective_provider in ("longbridge_mcp", "longbridge"):
+    mock_allowed = (
+        provider == "mock"
+        or os.getenv("APP_ENV") == "test"
+        or os.getenv("SMOKE_TEST_MODE", "").lower() in ("1", "true")
+    )
+
+    if effective_provider == "mock" and not mock_allowed:
+        results["checks"]["provider"] = {
+            "ok": False,
+            "provider": "mock",
+            "error": "Mock provider is not allowed from production environment/config",
+        }
+    elif effective_provider == "mock":
+        try:
+            from clients.mock_market_data_client import MockMarketDataClient
+            results["checks"]["provider"] = MockMarketDataClient().health_check()
+        except Exception as exc:
+            results["checks"]["provider"] = {"ok": False, "provider": "mock", "error": str(exc)}
+    elif effective_provider in ("longbridge_mcp", "longbridge"):
         try:
             from clients.longbridge_mcp_client import LongbridgeMcpClient
             lb = LongbridgeMcpClient()
-            lb_health = lb.health_check()
-            results["checks"]["longbridge_mcp"] = lb_health
-            if not lb_health.get("ok"):
-                results["status"] = "degraded"
+            results["checks"]["provider"] = lb.health_check()
         except Exception as exc:
-            results["checks"]["longbridge_mcp"] = {
+            results["checks"]["provider"] = {
                 "ok": False,
+                "provider": "longbridge_mcp",
                 "error": str(exc)[:300],
             }
-            results["status"] = "degraded"
     else:
-        results["checks"]["longbridge_mcp"] = {
-            "ok": bool(mcp_url and mcp_token),
-            "configured": bool(mcp_url and mcp_token),
-            "endpoint": mcp_url or "not set",
+        results["checks"]["provider"] = {
+            "ok": False,
+            "error": "No provider selected; use --provider mock or --provider longbridge_mcp",
         }
 
     # 3. Run logs availability

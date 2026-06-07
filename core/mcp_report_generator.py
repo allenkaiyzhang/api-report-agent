@@ -37,7 +37,7 @@ class ReportGenerator:
     def generate_intraday_brief(self, dataset: MarketReportDataset) -> str:
         """Generate a short intraday summary (notification-first format)."""
         if not dataset.validated:
-            logger.warning("Generating intraday brief from unvalidated dataset %s", dataset.run_id)
+            raise ValueError(f"Dataset {dataset.run_id} must be validated before report generation")
 
         now = datetime.now(timezone.utc)
         market = dataset.market
@@ -89,7 +89,7 @@ class ReportGenerator:
     def generate_daily_close_report(self, dataset: MarketReportDataset) -> str:
         """Generate a full daily close Markdown report."""
         if not dataset.validated:
-            logger.warning("Generating daily close from unvalidated dataset %s", dataset.run_id)
+            raise ValueError(f"Dataset {dataset.run_id} must be validated before report generation")
 
         now = datetime.now(timezone.utc)
         market = dataset.market

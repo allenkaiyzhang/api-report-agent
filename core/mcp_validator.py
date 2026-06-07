@@ -1,13 +1,4 @@
-"""MCP data validator — validates cleaned data against JSON schemas.
-
-Enforces report-type-specific validation rules:
-
-  intraday_brief  → requires valid open/active trading session
-  daily_close_report → requires market closed after trading session
-  event_alert     → can run during valid monitored windows only
-
-Never silently skips validation if jsonschema is missing.
-"""
+"""Validate cleaned MCP datasets before report generation."""
 
 from __future__ import annotations
 
@@ -15,54 +6,54 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from clients.market_data_client import MarketReportDataset
 
 logger = logging.getLogger(__name__)
 
 _SCHEMA_DIR = Path(__file__).resolve().parents[1] / "config" / "schemas"
+_MARKET_TIMEZONES = {
+    "US": "America/New_York",
+    "HK": "Asia/Hong_Kong",
+    "CN": "Asia/Shanghai",
+    "JP": "Asia/Tokyo",
+}
 
 
 class McpDataValidator:
-    """Validates MarketReportDataset against JSON schemas and report-type rules.
+    """Apply schemas and report-specific market/session rules."""
 
-    Must pass validation before reports can be generated.
-    Does NOT fabricate missing data.
-    """
-
-    def __init__(self, schema_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        schema_dir: Path | None = None,
+        post_market_delay_minutes: int = 15,
+        now_provider: Callable[[], datetime] | None = None,
+    ) -> None:
         self._schema_dir = schema_dir or _SCHEMA_DIR
+        self._post_market_delay_minutes = post_market_delay_minutes
+        self._now_provider = now_provider or (lambda: datetime.now(timezone.utc))
         self._schemas: dict[str, dict[str, Any]] = {}
         self._load_schemas()
 
     def _load_schemas(self) -> None:
-        schema_files = [
+        for filename in (
             "quote.schema.json",
             "candle.schema.json",
             "intraday.schema.json",
             "market_status.schema.json",
             "market_report_dataset.schema.json",
-        ]
-        for fname in schema_files:
-            path = self._schema_dir / fname
+        ):
+            path = self._schema_dir / filename
             if path.exists():
                 try:
-                    self._schemas[fname] = json.loads(path.read_text(encoding="utf-8"))
+                    self._schemas[filename] = json.loads(path.read_text(encoding="utf-8"))
                 except json.JSONDecodeError as exc:
-                    logger.error("Invalid schema file %s: %s", fname, exc)
+                    logger.error("Invalid schema file %s: %s", filename, exc)
 
     def validate(self, dataset: MarketReportDataset) -> MarketReportDataset:
-        """Validate dataset. Sets dataset.validated and dataset.validation_errors.
-
-        Validation is report-type aware:
-        - intraday_brief: requires open/active session (or explicit extended-hours mode)
-        - daily_close_report: requires market closed after trading session
-        - event_alert: must run during valid monitored windows
-        """
         errors: list[str] = []
-
-        # ── Basic data presence ──────────────────────────────────
         if not dataset.quotes:
             errors.append("No quote data available")
         if not dataset.market_status:
@@ -70,159 +61,175 @@ class McpDataValidator:
         if not dataset.symbols:
             errors.append("No symbols specified")
 
-        # ── Schema validation (must not silently skip) ───────────
         try:
-            import jsonschema
             self._validate_schemas(dataset, errors)
         except ImportError:
-            errors.append(
-                "jsonschema package not installed — schema validation skipped. "
-                "Install with: pip install jsonschema"
-            )
-            logger.error("jsonschema not installed; cannot validate schemas")
+            errors.append("jsonschema package not installed; schema validation cannot run")
 
-        # ── Report-type-aware market session validation ──────────
         if dataset.market_status:
             self._validate_market_session(dataset, errors)
 
-        # ── Cross-field validation ───────────────────────────────
-        symbols_with_quotes = {q.symbol for q in dataset.quotes}
+        symbols_with_quotes = {quote.symbol for quote in dataset.quotes}
         missing = set(dataset.symbols) - symbols_with_quotes
         if missing:
             errors.append(f"Missing quote data for symbols: {', '.join(sorted(missing))}")
 
-        dataset.validated = len(errors) == 0
+        dataset.validated = not errors
         dataset.validation_errors = errors
-
-        if not dataset.validated:
+        if errors:
             logger.warning(
                 "Dataset %s [%s] validation failed: %s",
                 dataset.run_id,
                 dataset.report_type,
                 "; ".join(errors),
             )
-        else:
-            logger.info("Dataset %s [%s] validation passed", dataset.run_id, dataset.report_type)
-
         return dataset
 
     def _validate_schemas(self, dataset: MarketReportDataset, errors: list[str]) -> None:
         import jsonschema
 
-        quote_schema = self._schemas.get("quote.schema.json")
-        candle_schema = self._schemas.get("candle.schema.json")
-        intraday_schema = self._schemas.get("intraday.schema.json")
-
-        for i, q in enumerate(dataset.quotes):
-            if quote_schema:
+        for label, records, filename in (
+            ("Quote", dataset.quotes, "quote.schema.json"),
+            ("Candle", dataset.candles, "candle.schema.json"),
+            ("Intraday", dataset.intraday, "intraday.schema.json"),
+        ):
+            schema = self._schemas.get(filename)
+            if not schema:
+                continue
+            for index, record in enumerate(records):
                 try:
-                    jsonschema.validate(q.to_dict(), quote_schema)
+                    jsonschema.validate(record.to_dict(), schema)
                 except jsonschema.ValidationError as exc:
-                    errors.append(f"Quote[{i}] {q.symbol}: {exc.message}")
-
-        for i, c in enumerate(dataset.candles):
-            if candle_schema:
-                try:
-                    jsonschema.validate(c.to_dict(), candle_schema)
-                except jsonschema.ValidationError as exc:
-                    errors.append(f"Candle[{i}] {c.symbol}: {exc.message}")
-
-        for i, p in enumerate(dataset.intraday):
-            if intraday_schema:
-                try:
-                    jsonschema.validate(p.to_dict(), intraday_schema)
-                except jsonschema.ValidationError as exc:
-                    errors.append(f"Intraday[{i}] {p.symbol}: {exc.message}")
+                    errors.append(f"{label}[{index}] {record.symbol}: {exc.message}")
 
     def _validate_market_session(
         self, dataset: MarketReportDataset, errors: list[str]
     ) -> None:
-        """Report-type-aware market session validation."""
         status = dataset.market_status
         if status is None:
             return
 
-        session = status.session
-        report_type = dataset.report_type
-
-        # ── Distinguish market states ────────────────────────────
-        is_holiday = session == "holiday"
-        is_closed = session == "closed"
-        is_weekend = self._is_weekend(status)
-
-        if report_type == "intraday_brief":
-            if not status.is_open:
-                reason = self._closed_reason(status, is_holiday, is_weekend, is_closed)
+        if dataset.report_type == "intraday_brief":
+            if not status.is_open or status.session not in (
+                "regular",
+                "extended_pre",
+                "extended_post",
+            ):
                 errors.append(
                     f"Intraday report requires open/active trading session. "
-                    f"Market {dataset.market} is {reason}."
+                    f"Market {dataset.market} is {status.session or 'unknown'}."
                 )
+            return
 
-        elif report_type == "daily_close_report":
-            if is_holiday:
-                errors.append(
-                    f"Daily close report skipped: {dataset.market} market is on holiday"
-                )
-            elif is_weekend:
-                errors.append(
-                    f"Daily close report skipped: {dataset.market} market is closed (weekend)"
-                )
+        if dataset.report_type == "daily_close_report":
+            if status.session == "holiday":
+                errors.append(f"Daily close report blocked: {dataset.market} market is on holiday")
             elif status.is_open:
                 errors.append(
                     f"Daily close report requires market to be closed. "
-                    f"Market {dataset.market} is open ({session})."
+                    f"Market {dataset.market} is open ({status.session})."
                 )
-            elif is_closed:
-                # Market closed — this is the expected state for daily_close_report.
-                # Only block if there's no trading date data or if the close seems stale.
-                pass
-            elif session == "unknown" or not session:
+            elif status.session not in ("closed", "extended_post"):
                 errors.append(
                     f"Daily close report cannot verify market state: "
-                    f"{dataset.market} status is unknown/stale"
+                    f"{dataset.market} status is {status.session or 'unknown'}"
                 )
+            else:
+                self._validate_daily_close_data(dataset, errors)
+            return
 
-        elif report_type == "event_alert":
-            if is_holiday or (is_closed and not self._could_be_post_market(status)):
+        if dataset.report_type == "event_alert" and status.session in ("holiday", "unknown", ""):
+            errors.append("Event alert requires a known monitored market window")
+
+    def _validate_daily_close_data(
+        self, dataset: MarketReportDataset, errors: list[str]
+    ) -> None:
+        status = dataset.market_status
+        if status is None:
+            return
+
+        market_tz = ZoneInfo(_MARKET_TIMEZONES.get(dataset.market.upper(), "UTC"))
+        close_time = self._resolve_completed_close(status, market_tz)
+        if close_time is None:
+            errors.append("Daily close report blocked: missing_session_close")
+            return
+
+        close_local = close_time.astimezone(market_tz)
+        trading_date = close_local.strftime("%Y-%m-%d")
+        now_utc = self._now_provider().astimezone(timezone.utc)
+        elapsed = (now_utc - close_time.astimezone(timezone.utc)).total_seconds()
+
+        if close_local.weekday() >= 5:
+            errors.append(f"Daily close report blocked: invalid trading day {trading_date}")
+        if elapsed < 0:
+            errors.append("Daily close report blocked: completed session close is in the future")
+        elif elapsed < self._post_market_delay_minutes * 60:
+            errors.append("Daily close report blocked: post-market delay not elapsed")
+
+        status_time = self._parse_timestamp(status.timestamp, market_tz)
+        if status_time is None:
+            errors.append("Daily close report cannot verify market status timestamp")
+        elif status_time < close_time:
+            errors.append("Daily close report market status predates completed session close")
+
+        if not dataset.candles:
+            errors.append("Daily close report requires candle data (missing daily OHLCV)")
+        if not dataset.intraday:
+            errors.append("Daily close report requires intraday data")
+
+        self._require_symbol_dates("quote", dataset.symbols, dataset.quotes, trading_date, market_tz, errors)
+        self._require_symbol_dates("candle", dataset.symbols, dataset.candles, trading_date, market_tz, errors)
+        self._require_symbol_dates("intraday", dataset.symbols, dataset.intraday, trading_date, market_tz, errors)
+
+        for quote in dataset.quotes:
+            timestamp = self._parse_timestamp(quote.timestamp, market_tz)
+            if timestamp is None:
+                errors.append(f"Daily close report: invalid quote timestamp for {quote.symbol}")
+                continue
+            age = (now_utc - timestamp.astimezone(timezone.utc)).total_seconds()
+            if age < 0 or age > 3600:
                 errors.append(
-                    f"Event alert requires valid monitored window. "
-                    f"Market {dataset.market} is {self._closed_reason(status, is_holiday, is_weekend, is_closed)}."
+                    f"Daily close report: stale quote for {quote.symbol} "
+                    f"(timestamp {quote.timestamp}, age {age:.0f}s)"
                 )
 
     @staticmethod
-    def _is_weekend(status: Any) -> bool:
-        """Heuristic: detect weekend based on timestamp day-of-week."""
-        ts = getattr(status, "timestamp", "")
-        if ts:
-            try:
-                from datetime import datetime as dt
-                d = dt.fromisoformat(ts.replace("Z", "+00:00"))
-                return d.weekday() >= 5  # Saturday=5, Sunday=6
-            except (ValueError, TypeError):
-                pass
-        return False
+    def _resolve_completed_close(status: Any, market_tz: ZoneInfo) -> datetime | None:
+        for value in (status.current_session_close, status.last_close):
+            parsed = McpDataValidator._parse_timestamp(value or "", market_tz)
+            if parsed is not None:
+                return parsed
+        return None
 
     @staticmethod
-    def _could_be_post_market(status: Any) -> bool:
-        """Check if a closed market could legitimately be in post-market window."""
-        session = getattr(status, "session", "")
-        return session in ("extended_post", "closed")
+    def _parse_timestamp(value: str, default_tz: Any) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=default_tz)
+        except (ValueError, TypeError):
+            return None
 
-    @staticmethod
-    def _closed_reason(
-        status: Any, is_holiday: bool, is_weekend: bool, is_closed: bool
-    ) -> str:
-        if is_holiday:
-            return "on holiday"
-        if is_weekend:
-            return "closed (weekend)"
-        session = getattr(status, "session", "")
-        if session == "pre_market":
-            return "pre-market"
-        if session == "extended_post":
-            return "post-market (extended)"
-        if is_closed:
-            return "closed"
-        if session:
-            return f"in session '{session}' (not open)"
-        return "in unknown state"
+    @classmethod
+    def _require_symbol_dates(
+        cls,
+        label: str,
+        symbols: list[str],
+        records: list[Any],
+        trading_date: str,
+        market_tz: ZoneInfo,
+        errors: list[str],
+    ) -> None:
+        aligned = {
+            record.symbol
+            for record in records
+            if (parsed := cls._parse_timestamp(record.timestamp, market_tz))
+            and parsed.astimezone(market_tz).strftime("%Y-%m-%d") == trading_date
+        }
+        missing = set(symbols) - aligned
+        if missing:
+            errors.append(
+                f"Daily close report: {label} timestamps do not align with trading date "
+                f"{trading_date} for symbols: {', '.join(sorted(missing))}"
+            )

@@ -1,14 +1,24 @@
-# Longbridge MCP Tool Policy Configuration
-# This file defines which tools are allowed, blocked, or require explicit config.
-# The code-level policy in tool_policy.py is authoritative; this YAML is for documentation.
-
 longbridge_tool_policy:
-  version: 2
-
-  # Default-deny: unknown tools are blocked unless explicitly allowed
+  version: 3
   default_deny_unknown: true
+  discovery_required: true
+  allowed_market_tools_before_discovery: []
 
-  # Trading/write tools — PERMANENTLY BLOCKED in code
+  required_internal_operations:
+    - quote
+    - candles
+    - intraday
+    - market_status
+
+  account_read_disabled_by_default:
+    - account_balance
+    - stock_positions
+    - today_orders
+    - history_orders
+    - today_executions
+    - history_executions
+    - statement_list
+
   trading_blocked:
     - submit_order
     - replace_order
@@ -27,34 +37,3 @@ longbridge_tool_policy:
     - sharelist_create
     - sharelist_delete
     - sharelist_remove
-
-  # Account-read tools — disabled by default
-  account_read_disabled_by_default:
-    - account_balance
-    - stock_positions
-    - today_orders
-    - history_orders
-    - today_executions
-    - history_executions
-    - statement_list
-
-  # Allowed read-only market/fundamental tools
-  allowed_market_tools:
-    - candlesticks          # Official Longbridge MCP name
-    - trading_session       # Official Longbridge MCP name
-    - get_stock_info        # Fundamental data
-    - get_calc_indexes      # Index calculations
-    - get_watchlist         # Watchlist management (read-only)
-    - get_option_chain      # Options chain (read-only)
-    - get_option_snapshot   # Options snapshot (read-only)
-    - get_option_underlying_info
-    - get_option_expiration_date
-
-  # Internal operation → official MCP tool name mapping
-  # Updated at runtime via MCP tool discovery
-  tool_mapping:
-    quote: get_stock_quote
-    candles: candlesticks
-    market_status: trading_session
-    intraday: get_intraday
-    fundamentals: get_stock_info

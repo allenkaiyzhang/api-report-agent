@@ -116,6 +116,16 @@ def _create_client(args: argparse.Namespace) -> MarketDataClient:
     """
     provider = _resolve_provider(args)
 
+    if provider == "mock" and not (
+        args.provider == "mock"
+        or os.getenv("APP_ENV", "") == "test"
+        or os.getenv("SMOKE_TEST_MODE", "").lower() in ("1", "true")
+    ):
+        raise SystemExit(
+            "ERROR: Mock provider is not allowed from production environment/config. "
+            "Use explicit --provider mock, APP_ENV=test, or SMOKE_TEST_MODE=true."
+        )
+
     if provider == "mock":
         if not args.provider and os.getenv("APP_ENV", "") != "test":
             logger = logging.getLogger(__name__)
@@ -239,8 +249,7 @@ def _run_report_workflow(
                     started_at,
                     error_message=skip_reason,
                 )
-            # SKIPPED is not a failure
-            return True
+            return False
         store.log_run(run_id, report_type, market, "*", "DATA_VALIDATED", started_at)
 
         # ── Save clean snapshot ──────────────────────────────────
@@ -383,7 +392,7 @@ def run_scheduler(market: str | None = None, provider: str | None = None) -> Non
 
     collector = McpDataCollector(client)
     cleaner = McpDataCleaner()
-    validator = McpDataValidator()
+    validator = McpDataValidator(post_market_delay_minutes=post_market_delay)
     generator = ReportGenerator()
     store = McpDataStore()
     notifier = create_notifiers(
@@ -394,14 +403,14 @@ def run_scheduler(market: str | None = None, provider: str | None = None) -> Non
 
     markets = list(symbols_by_market.keys())
 
-    def on_intraday(run_id: str, m: str, symbols: list[str]) -> None:
-        _run_report_workflow(
+    def on_intraday(run_id: str, m: str, symbols: list[str]) -> bool:
+        return _run_report_workflow(
             run_id, m, symbols, "intraday_brief",
             client, collector, cleaner, validator, generator, store, notifier,
         )
 
-    def on_daily_close(run_id: str, m: str, symbols: list[str]) -> None:
-        _run_report_workflow(
+    def on_daily_close(run_id: str, m: str, symbols: list[str]) -> bool:
+        return _run_report_workflow(
             run_id, m, symbols, "daily_close_report",
             client, collector, cleaner, validator, generator, store, notifier,
         )
@@ -422,15 +431,16 @@ def run_scheduler(market: str | None = None, provider: str | None = None) -> Non
 
 
 def run_health(provider: str | None = None) -> dict:
-    """Run health check and return status."""
+    """Run health check and return status.
+
+    Does NOT silently fall back to mock in production.
+    Provider is resolved via the standard precedence chain.
+    """
     _load_env()
     _setup_logging(log_level="WARNING")
 
-    try:
-        args = argparse.Namespace(provider=provider or os.getenv("MARKET_DATA_PROVIDER", "mock"))
-        client = _create_client(args)
-    except SystemExit:
-        client = MockMarketDataClient()
+    args = argparse.Namespace(provider=provider)
+    client = _create_client(args)
 
     notifier = create_notifiers(enable_console=False)
     store = McpDataStore()
@@ -461,6 +471,8 @@ def main() -> None:
         import json
         result = run_health(provider=args.provider)
         print(json.dumps(result, indent=2, ensure_ascii=False))
+        if result["status"] != "ok":
+            sys.exit(1)
         return
 
     if args.once:

@@ -30,7 +30,7 @@ echo ""
 # --- .env check ---
 if [[ ! -f "$PROJECT_ROOT/.env" ]]; then
   echo "WARNING: .env is missing. Copy .env.example to .env and configure it."
-  echo "  At minimum, set MARKET_DATA_PROVIDER=longbridge_mcp and LONGBRIDGE_MCP_OAUTH_TOKEN."
+  echo "  At minimum, set MARKET_DATA_PROVIDER=longbridge_mcp and LONGBRIDGE_MCP_AUTH_HEADER."
 fi
 
 # --- Create/update virtualenv ---
@@ -86,7 +86,7 @@ fi
 # --- Health check ---
 echo ""
 echo "--- Health check ---"
-if ! "$PYTHON" scripts/healthcheck_mcp.py --json 2>&1; then
+if ! "$PYTHON" scripts/market_report_agent.py --health 2>&1; then
     echo "ERROR: Health check failed"
     exit 1
 fi
@@ -101,7 +101,7 @@ if [ -f "$PROJECT_ROOT/scripts/smoke_test.py" ]; then
         exit 1
     fi
 elif [ -f "$PROJECT_ROOT/scripts/smoke_test.sh" ]; then
-    if ! "$PYTHON" scripts/smoke_test.sh 2>&1; then
+    if ! bash scripts/smoke_test.sh 2>&1; then
         echo "ERROR: Smoke test failed"
         exit 1
     fi

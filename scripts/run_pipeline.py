@@ -1,10 +1,21 @@
+"""LEGACY pipeline entrypoint (DEPRECATED).
+
+This script uses the old longbridge.openapi SDK pipeline (clients/market_client.py).
+The production MCP workflow is at scripts/market_report_agent.py.
+
+This legacy path is kept for reference only. Do NOT use as the production entrypoint.
+"""
+
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
 
@@ -385,6 +396,12 @@ def build_session_metadata(collector_started_at: datetime | None) -> dict[str, o
 def main() -> None:
     load_dotenv(BASE_DIR / ".env")
     apply_registry_to_env(override=True)
+
+    logger.warning(
+        "WARNING: This is the LEGACY pipeline (longbridge.openapi SDK). "
+        "For production MCP workflow, use scripts/market_report_agent.py instead."
+    )
+
     logger = setup_logger("pipeline", "pipeline.log")
     setup_logger("collect", "collect.log")
     setup_logger("normalize", "normalize.log")

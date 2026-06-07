@@ -80,6 +80,7 @@ jobs:
               git restore .
               git pull --ff-only
             fi
-            chmod +x scripts/deploy.sh scripts/smoke_test.sh scripts/tail_logs.sh
+            chmod +x scripts/deploy.sh scripts/tail_logs.sh
             scripts/deploy.sh
-            scripts/smoke_test.sh
+            # Run smoke test explicitly via venv Python (cross-platform .py)
+            .venv/bin/python scripts/smoke_test.py

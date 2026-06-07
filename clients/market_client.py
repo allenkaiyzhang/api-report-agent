@@ -1,3 +1,10 @@
+"""LEGACY MarketClient — uses longbridge.openapi SDK (DEPRECATED).
+
+This module is part of the legacy SDK pipeline. The current production path
+uses MarketDataClient abstraction with LongbridgeMcpClient (MCP adapter).
+See clients/longbridge_mcp_client.py for the MCP implementation.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
