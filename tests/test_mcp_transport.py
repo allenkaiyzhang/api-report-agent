@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import sys
 import types
+import logging
 from contextlib import asynccontextmanager
 
 import pytest
+import httpx
 
 from clients.longbridge_mcp_client import LongbridgeMcpClient
+
+STREAMABLE_CALLS: list[dict] = []
 
 
 class FakeSession:
@@ -41,6 +45,7 @@ class FakeSession:
 
 
 def _install_fake_mcp(monkeypatch: pytest.MonkeyPatch, transport) -> None:
+    STREAMABLE_CALLS.clear()
     FakeSession.instances = []
     mcp = types.ModuleType("mcp")
     mcp.ClientSession = FakeSession
@@ -48,7 +53,14 @@ def _install_fake_mcp(monkeypatch: pytest.MonkeyPatch, transport) -> None:
     streamable = types.ModuleType("mcp.client.streamable_http")
 
     @asynccontextmanager
-    async def streamable_http_client(**kwargs):
+    async def streamable_http_client(
+        url: str, *, http_client=None, terminate_on_close: bool = True
+    ):
+        STREAMABLE_CALLS.append({
+            "url": url,
+            "http_client": http_client,
+            "terminate_on_close": terminate_on_close,
+        })
         yield transport
 
     streamable.streamable_http_client = streamable_http_client
@@ -70,6 +82,11 @@ def test_streamable_transport_accepts_two_and_three_tuples(
     assert session.write == "write"
     assert session.initialized
     assert session.list_tools_called
+    call = STREAMABLE_CALLS[-1]
+    assert "headers" not in call
+    assert isinstance(call["http_client"], httpx.AsyncClient)
+    assert call["http_client"].headers["Authorization"] == "Bearer test"
+    assert call["http_client"].is_closed
 
 
 def test_unsupported_streamable_transport_shape_fails_clearly(
@@ -93,6 +110,18 @@ def test_call_tool_uses_initialized_streamable_session(
     session = FakeSession.instances[-1]
     assert session.initialized
     assert session.call_tool_args == ("quote", {"symbols": ["QQQ"]})
+
+
+def test_streamable_client_receives_http_client_without_headers_kwarg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_mcp(monkeypatch, ("read", "write", lambda: "id"))
+    LongbridgeMcpClient(auth_header="Bearer secret-value")._list_tools_raw()
+
+    call = STREAMABLE_CALLS[-1]
+    assert set(call) == {"url", "http_client", "terminate_on_close"}
+    assert isinstance(call["http_client"], httpx.AsyncClient)
+    assert call["http_client"].headers["Authorization"] == "Bearer secret-value"
 
 
 def test_legacy_streamable_client_alias_is_import_only_compatible(
@@ -148,3 +177,36 @@ def test_runtime_streamable_error_does_not_fall_back_to_sse(
     with pytest.raises(ValueError, match="streamable runtime failure"):
         LongbridgeMcpClient(auth_header="Bearer test")._list_tools_raw()
     assert not sse_called
+
+
+def test_missing_auth_fails_before_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LONGBRIDGE_MCP_AUTH_HEADER", raising=False)
+    with pytest.raises(RuntimeError, match="auth header not configured"):
+        LongbridgeMcpClient(auth_header="")._list_tools_raw()
+
+
+def test_transport_error_does_not_log_or_raise_full_authorization(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    secret = "Bearer secret-token-value"
+    mcp = types.ModuleType("mcp")
+    mcp.ClientSession = FakeSession
+    client = types.ModuleType("mcp.client")
+    streamable = types.ModuleType("mcp.client.streamable_http")
+
+    @asynccontextmanager
+    async def streamable_http_client(**kwargs):
+        raise RuntimeError(f"provider rejected {secret}")
+        yield
+
+    streamable.streamable_http_client = streamable_http_client
+    monkeypatch.setitem(sys.modules, "mcp", mcp)
+    monkeypatch.setitem(sys.modules, "mcp.client", client)
+    monkeypatch.setitem(sys.modules, "mcp.client.streamable_http", streamable)
+
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError) as exc_info:
+        LongbridgeMcpClient(auth_header=secret)._call_mcp_raw("quote", {})
+
+    assert "secret-token-value" not in str(exc_info.value)
+    assert "secret-token-value" not in caplog.text
+    assert "REDACTED" in str(exc_info.value)

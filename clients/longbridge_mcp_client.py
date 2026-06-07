@@ -26,7 +26,7 @@ import json
 import logging
 import os
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
@@ -152,8 +152,9 @@ class LongbridgeMcpClient(MarketDataClient):
                 )
                 logger.error(self._discovery_error)
         except Exception as exc:
+            detail = self._sanitize_error_message(exc)
             self._discovery_error = (
-                f"Tool discovery failed: {exc}. "
+                f"Tool discovery failed: {detail}. "
                 "Cannot proceed in production mode without tool discovery."
             )
             logger.error(self._discovery_error)
@@ -226,8 +227,9 @@ class LongbridgeMcpClient(MarketDataClient):
                 "MCP SDK not installed. Install with: pip install mcp>=1.0.0"
             )
         except Exception as exc:
-            logger.error("MCP tool '%s' failed: %s", tool_name, exc)
-            raise
+            detail = self._sanitize_error_message(exc)
+            logger.error("MCP tool '%s' failed: %s", tool_name, detail)
+            raise RuntimeError(f"MCP tool '{tool_name}' failed: {detail}") from exc
 
     def _list_tools_raw(self) -> Any:
         """Use the MCP protocol list_tools operation, not an invented tool call."""
@@ -261,6 +263,16 @@ class LongbridgeMcpClient(MarketDataClient):
             raise RuntimeError("Unsupported MCP transport shape: read/write streams are required")
         return read, write
 
+    def _sanitize_error_message(self, error: Exception) -> str:
+        """Remove the configured Authorization value from provider errors."""
+        message = str(error)
+        if self._auth_header:
+            message = message.replace(self._auth_header, "[REDACTED_AUTHORIZATION]")
+            parts = self._auth_header.split(" ", 1)
+            if len(parts) == 2 and parts[1]:
+                message = message.replace(parts[1], "[REDACTED_TOKEN]")
+        return message
+
     @asynccontextmanager
     async def _open_mcp_session(self) -> AsyncIterator[Any]:
         """Open and initialize an MCP session over Streamable HTTP or import-only SSE fallback."""
@@ -274,20 +286,26 @@ class LongbridgeMcpClient(MarketDataClient):
             except ImportError:
                 streamable_http_client = None
 
-        if streamable_http_client is None:
-            from mcp.client.sse import sse_client
+        async with AsyncExitStack() as stack:
+            if streamable_http_client is None:
+                from mcp.client.sse import sse_client
 
-            transport_context = sse_client(
-                url=self._mcp_url,
-                headers={"Authorization": self._auth_header},
-            )
-        else:
-            transport_context = streamable_http_client(
-                url=self._mcp_url,
-                headers={"Authorization": self._auth_header},
-            )
+                transport_context = sse_client(
+                    url=self._mcp_url,
+                    headers={"Authorization": self._auth_header},
+                )
+            else:
+                import httpx
 
-        async with transport_context as transport:
+                http_client = await stack.enter_async_context(
+                    httpx.AsyncClient(headers={"Authorization": self._auth_header})
+                )
+                transport_context = streamable_http_client(
+                    url=self._mcp_url,
+                    http_client=http_client,
+                )
+
+            transport = await stack.enter_async_context(transport_context)
             read, write = self._normalize_mcp_transport(transport)
             async with ClientSession(read, write) as session:
                 await session.initialize()
@@ -353,7 +371,7 @@ class LongbridgeMcpClient(MarketDataClient):
                 "ok": False,
                 "provider": "longbridge_mcp",
                 "status": "discovery_failed",
-                "error": str(exc)[:300],
+                "error": self._sanitize_error_message(exc)[:300],
                 "mcp_endpoint": self._mcp_url,
             }
 
@@ -373,7 +391,7 @@ class LongbridgeMcpClient(MarketDataClient):
                 "ok": False,
                 "provider": "longbridge_mcp",
                 "status": "connection_failed",
-                "error": str(exc)[:300],
+                "error": self._sanitize_error_message(exc)[:300],
                 "mcp_endpoint": self._mcp_url,
                 "discovery": "ok",
                 "discovery_detail": None,
