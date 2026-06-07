@@ -22,9 +22,7 @@ venv/
 env/
 
 # Runtime data (raw & cleaned market data, run logs, reports)
-data/raw/
-data/clean/
-data/run_logs.jsonl
+data/
 logs/*
 !logs/.gitkeep
 runtime/*
