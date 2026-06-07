@@ -44,11 +44,13 @@ class FakeSession:
         return {"content": []}
 
 
-def _install_fake_mcp(monkeypatch: pytest.MonkeyPatch, transport) -> None:
+def _install_fake_mcp(
+    monkeypatch: pytest.MonkeyPatch, transport, session_class=FakeSession
+) -> None:
     STREAMABLE_CALLS.clear()
-    FakeSession.instances = []
+    session_class.instances = []
     mcp = types.ModuleType("mcp")
-    mcp.ClientSession = FakeSession
+    mcp.ClientSession = session_class
     client = types.ModuleType("mcp.client")
     streamable = types.ModuleType("mcp.client.streamable_http")
 
@@ -210,3 +212,132 @@ def test_transport_error_does_not_log_or_raise_full_authorization(
     assert "secret-token-value" not in str(exc_info.value)
     assert "secret-token-value" not in caplog.text
     assert "REDACTED" in str(exc_info.value)
+
+
+def test_streamable_open_exception_group_surfaces_leaf_cause(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    mcp = types.ModuleType("mcp")
+    mcp.ClientSession = FakeSession
+    client = types.ModuleType("mcp.client")
+    streamable = types.ModuleType("mcp.client.streamable_http")
+
+    @asynccontextmanager
+    async def streamable_http_client(**kwargs):
+        raise ExceptionGroup(
+            "transport task group",
+            [httpx.ConnectTimeout("connection timed out")],
+        )
+        yield
+
+    streamable.streamable_http_client = streamable_http_client
+    monkeypatch.setitem(sys.modules, "mcp", mcp)
+    monkeypatch.setitem(sys.modules, "mcp.client", client)
+    monkeypatch.setitem(sys.modules, "mcp.client.streamable_http", streamable)
+
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError) as exc_info:
+        LongbridgeMcpClient(auth_header="Bearer test")._list_tools_raw()
+
+    message = str(exc_info.value)
+    assert "streamable HTTP session open" in message
+    assert "ConnectTimeout: connection timed out" in message
+    assert "ConnectTimeout: connection timed out" in caplog.text
+
+
+def test_streamable_lifecycle_exception_group_surfaces_in_health(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    mcp = types.ModuleType("mcp")
+    mcp.ClientSession = FakeSession
+    client = types.ModuleType("mcp.client")
+    streamable = types.ModuleType("mcp.client.streamable_http")
+
+    @asynccontextmanager
+    async def streamable_http_client(**kwargs):
+        yield ("read", "write", lambda: "id")
+        raise ExceptionGroup(
+            "transport close task group",
+            [httpx.RemoteProtocolError("server disconnected unexpectedly")],
+        )
+
+    streamable.streamable_http_client = streamable_http_client
+    monkeypatch.setitem(sys.modules, "mcp", mcp)
+    monkeypatch.setitem(sys.modules, "mcp.client", client)
+    monkeypatch.setitem(sys.modules, "mcp.client.streamable_http", streamable)
+
+    with caplog.at_level(logging.ERROR):
+        health = LongbridgeMcpClient(auth_header="Bearer test").health_check()
+
+    assert not health["ok"]
+    assert health["status"] == "discovery_failed"
+    assert "RemoteProtocolError: server disconnected unexpectedly" in health["error"]
+    assert "RemoteProtocolError: server disconnected unexpectedly" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("stage", "operation", "expected_stage"),
+    [
+        ("initialize", "_list_tools_raw", "session.initialize"),
+        ("list_tools", "_list_tools_raw", "list_tools"),
+        ("call_tool", "_call_mcp_raw", "call_tool(quote)"),
+    ],
+)
+def test_session_exception_groups_surface_sanitized_leaf_causes(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    stage: str,
+    operation: str,
+    expected_stage: str,
+) -> None:
+    secret = "Bearer secret-token-value"
+
+    class FailingSession(FakeSession):
+        async def initialize(self):
+            if stage == "initialize":
+                raise ExceptionGroup(
+                    "initialize task group",
+                    [httpx.HTTPStatusError(
+                        f"401 unauthorized for {secret}",
+                        request=httpx.Request("POST", "https://mcp.longbridge.com"),
+                        response=httpx.Response(401),
+                    )],
+                )
+            await super().initialize()
+
+        async def list_tools(self):
+            if stage == "list_tools":
+                raise ExceptionGroup(
+                    "list task group",
+                    [httpx.RemoteProtocolError(f"invalid response for {secret}")],
+                )
+            return await super().list_tools()
+
+        async def call_tool(self, name, arguments):
+            if stage == "call_tool":
+                raise ExceptionGroup(
+                    "call task group",
+                    [httpx.ConnectTimeout(f"timeout using {secret}")],
+                )
+            return await super().call_tool(name, arguments)
+
+    _install_fake_mcp(
+        monkeypatch, ("read", "write", lambda: "id"), session_class=FailingSession
+    )
+    mcp_client = LongbridgeMcpClient(auth_header=secret)
+
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError) as exc_info:
+        if operation == "_list_tools_raw":
+            mcp_client._list_tools_raw()
+        else:
+            mcp_client._call_mcp_raw("quote", {"symbols": ["QQQ"]})
+
+    message = str(exc_info.value)
+    assert expected_stage in message
+    assert {
+        "initialize": "HTTPStatusError: 401 unauthorized",
+        "list_tools": "RemoteProtocolError: invalid response",
+        "call_tool": "ConnectTimeout: timeout",
+    }[stage] in message
+    assert "secret-token-value" not in message
+    assert "secret-token-value" not in caplog.text
+    assert "REDACTED" in message

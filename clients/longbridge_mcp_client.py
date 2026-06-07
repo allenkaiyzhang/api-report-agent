@@ -218,7 +218,10 @@ class LongbridgeMcpClient(MarketDataClient):
 
             async def _call() -> Any:
                 async with self._open_mcp_session() as session:
-                    return await session.call_tool(tool_name, arguments=arguments)
+                    return await self._await_mcp_stage(
+                        f"call_tool({tool_name})",
+                        session.call_tool(tool_name, arguments=arguments),
+                    )
 
             return asyncio.run(_call())
 
@@ -239,7 +242,7 @@ class LongbridgeMcpClient(MarketDataClient):
 
             async def _list() -> Any:
                 async with self._open_mcp_session() as session:
-                    return await session.list_tools()
+                    return await self._await_mcp_stage("list_tools", session.list_tools())
 
             return asyncio.run(_list())
         except ImportError as exc:
@@ -263,15 +266,47 @@ class LongbridgeMcpClient(MarketDataClient):
             raise RuntimeError("Unsupported MCP transport shape: read/write streams are required")
         return read, write
 
-    def _sanitize_error_message(self, error: Exception) -> str:
-        """Remove the configured Authorization value from provider errors."""
-        message = str(error)
+    def _sanitize_text(self, message: str) -> str:
+        """Remove the configured Authorization value from diagnostic text."""
         if self._auth_header:
             message = message.replace(self._auth_header, "[REDACTED_AUTHORIZATION]")
             parts = self._auth_header.split(" ", 1)
             if len(parts) == 2 and parts[1]:
                 message = message.replace(parts[1], "[REDACTED_TOKEN]")
         return message
+
+    def _sanitize_error_message(self, error: BaseException) -> str:
+        """Remove the configured Authorization value from provider errors."""
+        if isinstance(error, BaseExceptionGroup):
+            return "; ".join(self._exception_group_details(error))
+        return self._sanitize_text(str(error))
+
+    def _exception_group_details(self, error: BaseException) -> list[str]:
+        """Return sanitized leaf exception types/messages from an exception group."""
+        if isinstance(error, BaseExceptionGroup):
+            details: list[str] = []
+            for nested in error.exceptions:
+                details.extend(self._exception_group_details(nested))
+            return details
+        message = self._sanitize_error_message(error)
+        return [f"{type(error).__name__}: {message}"]
+
+    def _raise_observable_exception_group(
+        self, stage: str, error: BaseExceptionGroup
+    ) -> None:
+        """Log every exception-group leaf and raise one actionable provider error."""
+        details = self._exception_group_details(error)
+        for detail in details:
+            logger.error("Longbridge MCP %s failed: %s", stage, detail)
+        joined = "; ".join(details) or self._sanitize_error_message(error)
+        raise RuntimeError(f"Longbridge MCP {stage} failed: {joined}") from error
+
+    async def _await_mcp_stage(self, stage: str, awaitable: Any) -> Any:
+        """Await an MCP SDK operation while surfacing TaskGroup root causes."""
+        try:
+            return await awaitable
+        except BaseExceptionGroup as exc:
+            self._raise_observable_exception_group(stage, exc)
 
     @asynccontextmanager
     async def _open_mcp_session(self) -> AsyncIterator[Any]:
@@ -286,30 +321,45 @@ class LongbridgeMcpClient(MarketDataClient):
             except ImportError:
                 streamable_http_client = None
 
-        async with AsyncExitStack() as stack:
-            if streamable_http_client is None:
-                from mcp.client.sse import sse_client
+        try:
+            async with AsyncExitStack() as stack:
+                if streamable_http_client is None:
+                    from mcp.client.sse import sse_client
 
-                transport_context = sse_client(
-                    url=self._mcp_url,
-                    headers={"Authorization": self._auth_header},
-                )
-            else:
-                import httpx
+                    transport_context = sse_client(
+                        url=self._mcp_url,
+                        headers={"Authorization": self._auth_header},
+                    )
+                else:
+                    import httpx
 
-                http_client = await stack.enter_async_context(
-                    httpx.AsyncClient(headers={"Authorization": self._auth_header})
-                )
-                transport_context = streamable_http_client(
-                    url=self._mcp_url,
-                    http_client=http_client,
-                )
+                    http_client = await stack.enter_async_context(
+                        httpx.AsyncClient(headers={"Authorization": self._auth_header})
+                    )
+                    transport_context = streamable_http_client(
+                        url=self._mcp_url,
+                        http_client=http_client,
+                    )
 
-            transport = await stack.enter_async_context(transport_context)
-            read, write = self._normalize_mcp_transport(transport)
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                yield session
+                try:
+                    transport = await stack.enter_async_context(transport_context)
+                except BaseExceptionGroup as exc:
+                    self._raise_observable_exception_group(
+                        "streamable HTTP session open", exc
+                    )
+                read, write = self._normalize_mcp_transport(transport)
+                try:
+                    async with ClientSession(read, write) as session:
+                        await self._await_mcp_stage(
+                            "session.initialize", session.initialize()
+                        )
+                        yield session
+                except BaseExceptionGroup as exc:
+                    self._raise_observable_exception_group("session", exc)
+        except BaseExceptionGroup as exc:
+            self._raise_observable_exception_group(
+                "streamable HTTP session lifecycle", exc
+            )
 
     def _call_mcp_tool(self, internal_op: str, arguments: dict[str, Any]) -> Any:
         """Call a Longbridge MCP tool with policy enforcement.
