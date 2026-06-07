@@ -77,8 +77,8 @@ jobs:
             --output /tmp/market-report-agent.service \
             --deploy-root /opt/api-report-agent \
             --venv-dir /opt/api-report-agent/.venv \
-            --user apiagent \
-            --group apiagent
+            --service-user apiagent \
+            --service-group apiagent
 
       - name: Validate rendered unit
         run: |
