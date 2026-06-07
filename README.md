@@ -22,6 +22,28 @@ Longbridge SDK paths and are not used by deploy or systemd.
 The discovered tools must map the internal quote, candlestick, intraday, and
 trading-session operations. Discovery or mapping failure blocks the real provider.
 
+### MCP Authorization Bootstrap
+
+Longbridge provides single-use authorization codes valid for 10 minutes. These codes must be exchanged for an access token via an authentication endpoint to connect to the main MCP service.
+
+1. **Exchange Auth Code:**
+   You can use the provided script `scripts/longbridge_auth_exchange.py` to perform this exchange automatically:
+   ```bash
+   python scripts/longbridge_auth_exchange.py --auth-code <your-auth-code>
+   ```
+   This will connect to the temporary authentication endpoint (`https://mcp.longbridge.cn/agent`), call the `authenticate` tool with your code, and output safe instructions.
+
+2. **Automated Environment Configuration:**
+   If you want the script to automatically update your `.env` file, supply the `--write-env` flag:
+   ```bash
+   python scripts/longbridge_auth_exchange.py --auth-code <your-auth-code> --write-env
+   ```
+
+3. **Key Concepts:**
+   - **Auth Endpoint:** `https://mcp.longbridge.cn/agent` is used **only** for bootstrap exchange via the `authenticate` tool. It must *not* be used as the main MCP service.
+   - **Main MCP Endpoint:** `https://mcp.longbridge.cn` (for Mainland China) or `https://mcp.longbridge.com` (Global) is the actual MCP service where the exchanged token is used via the `Authorization: Bearer <token>` header.
+   - **Token Expiry & Re-auth:** Exchanged access tokens are subject to expiration. If the token expires or becomes invalid, you will encounter connection/session failures. You must obtain a new auth code from Longbridge and run the exchange script again to update your credentials. Never commit auth codes or raw tokens to version control.
+
 ## Project Structure
 
 ```text
@@ -214,8 +236,18 @@ sudo journalctl -u market-report-agent -f
 
 ## Troubleshooting
 
-- `LONGBRIDGE_MCP_AUTH_HEADER not set`: provide an externally authorized header.
-- `discovery_failed`: verify endpoint, auth/session validity, network, and MCP SDK.
+- **Missing Auth (`LONGBRIDGE_MCP_AUTH_HEADER not set`):**
+  - *Symptom:* The health check fails and reports "LONGBRIDGE_MCP_AUTH_HEADER not set".
+  - *Cause:* The `LONGBRIDGE_MCP_AUTH_HEADER` environment variable is either empty or not defined in your `.env`.
+  - *Fix:* Obtain an auth code from Longbridge, run the exchange script `python scripts/longbridge_auth_exchange.py --auth-code <your-auth-code> --write-env` to write it directly into `.env`, and restart the service.
+- **Invalid / Expired Auth:**
+  - *Symptom:* The health check or data operations fail with authentication errors (e.g., HTTP 401 Unauthorized or Session Rejected).
+  - *Cause:* The pre-obtained bearer token in `LONGBRIDGE_MCP_AUTH_HEADER` has expired or been invalidated on the server.
+  - *Fix:* Longbridge auth tokens are temporary and must be periodically refreshed. Obtain a new auth code and re-run `python scripts/longbridge_auth_exchange.py --auth-code <new-code> --write-env` to overwrite the expired token.
+- **Discovery Failed (`discovery_failed`):**
+  - *Symptom:* "discovery_failed: Tool discovery failed..." or "Required MCP operations not mapped".
+  - *Cause:* The service could not retrieve/handshake the available tools list from the main MCP endpoint. This can be caused by network connectivity issues, incorrect `LONGBRIDGE_MCP_URL`, invalid auth headers, or problems with the python `mcp` SDK.
+  - *Fix:* Verify that `LONGBRIDGE_MCP_URL` is set to the correct main service endpoint (`https://mcp.longbridge.cn` or `https://mcp.longbridge.com`), check your internet connectivity, and ensure your authentication header is valid and active.
 - `Required MCP operations not mapped`: inspect the provider's discovered tools.
 - `missing_session_close`: provider did not supply a reliable completed close.
 - `post-market delay not elapsed`: wait until the configured delay passes.

@@ -18,6 +18,28 @@
 - 本仓库未实现完整 Longbridge OAuth 2.1；使用外部已授权会话提供的
   `LONGBRIDGE_MCP_AUTH_HEADER`。
 
+### MCP 授权引导启动 (Authorization Bootstrap)
+
+Longbridge 提供的单次使用授权码 (auth code) 有效期为 10 分钟。必须在认证端点将该授权码交换为访问令牌 (access token)，才能连接到主 MCP 服务。
+
+1. **交换授权码：**
+   您可以使用自带的脚本 `scripts/longbridge_auth_exchange.py` 来自动执行此交换：
+   ```bash
+   python scripts/longbridge_auth_exchange.py --auth-code <您的授权码>
+   ```
+   该脚本会连接到临时的认证端点 (`https://mcp.longbridge.cn/agent`)，使用您的授权码调用 `authenticate` 工具，并打印安全指南。
+
+2. **自动环境配置：**
+   若需要脚本自动将更新后的令牌写入您的 `.env` 文件，请添加 `--write-env` 参数：
+   ```bash
+   python scripts/longbridge_auth_exchange.py --auth-code <您的授权码> --write-env
+   ```
+
+3. **核心概念：**
+   - **认证端点 (Auth Endpoint)：** `https://mcp.longbridge.cn/agent` **仅**用于通过 `authenticate` 工具进行初始授权码交换，绝不能用作主 MCP 服务地址。
+   - **主 MCP 端点 (Main MCP Endpoint)：** `https://mcp.longbridge.cn`（中国大陆）或 `https://mcp.longbridge.com`（全球）是真正提供行情等数据服务的主端点，在此端点上通过 `Authorization: Bearer <token>` 请求头提供已交换的令牌。
+   - **令牌过期与重认证：** 交换获得的访问令牌有有效期限制。如果令牌过期或失效，系统运行或健康检查会报错。此时您需要向 Longbridge 获取新的授权码，并再次运行该交换脚本更新 `.env`。严禁将授权码或 raw 令牌提交到版本控制系统。
+
 ## 依赖
 
 - **生产 / 部署:** `requirements.txt` — 最小运行时依赖（由 `scripts/deploy.sh` 使用）。
@@ -102,8 +124,18 @@ sudo journalctl -u market-report-agent -f
 
 ## 排障
 
-- `LONGBRIDGE_MCP_AUTH_HEADER not set`：配置外部已授权会话头。
-- `discovery_failed`：检查 MCP 地址、会话、网络和 MCP SDK。
+- **缺少认证授权 (`LONGBRIDGE_MCP_AUTH_HEADER not set`)：**
+  - *现象：* 健康检查失败，提示 "LONGBRIDGE_MCP_AUTH_HEADER not set"。
+  - *原因：* `LONGBRIDGE_MCP_AUTH_HEADER` 环境变量在 `.env` 中为空或未定义。
+  - *修复：* 向 Longbridge 获取授权码 (auth code)，然后运行交换脚本：`python scripts/longbridge_auth_exchange.py --auth-code <您的授权码> --write-env`，更新至 `.env` 文件，然后重启服务。
+- **认证失效或过期 (Invalid / Expired Auth)：**
+  - *现象：* 健康检查或数据请求操作失败，并报错提示认证错误（如 HTTP 401 Unauthorized 或 Session Rejected 等）。
+  - *原因：* 在 `LONGBRIDGE_MCP_AUTH_HEADER` 中配置的 Bearer 访问令牌已在服务器端过期或被失效。
+  - *修复：* Longbridge 的访问令牌是临时的，必须定期进行刷新。向 Longbridge 获取新的授权码，然后重新运行 `python scripts/longbridge_auth_exchange.py --auth-code <新授权码> --write-env` 重新覆写配置中的过期令牌。
+- **工具发现失败 (`discovery_failed`)：**
+  - *现象：* 报错提示 "discovery_failed: Tool discovery failed..." 或 "Required MCP operations not mapped"。
+  - *原因：* 无法从主 MCP 端点获取/握手可用工具列表。可能由于网络连接异常、`LONGBRIDGE_MCP_URL` 配置错误、认证头部 token 失效或 Python `mcp` SDK 问题导致。
+  - *修复：* 检查并确保 `LONGBRIDGE_MCP_URL` 配置为正确的主端点（`https://mcp.longbridge.cn` 或 `https://mcp.longbridge.com`），确认网络畅通且认证头部有效。
 - `missing_session_close`：provider 未提供可靠的已完成收盘时间。
 - `timestamps do not align`：数据陈旧或不属于目标交易日。
 - **Dirty Working Tree（已跟踪文件的修改）：**
