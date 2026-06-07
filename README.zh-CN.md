@@ -85,6 +85,23 @@ sudo journalctl -u market-report-agent -f
 - `discovery_failed`：检查 MCP 地址、会话、网络和 MCP SDK。
 - `missing_session_close`：provider 未提供可靠的已完成收盘时间。
 - `timestamps do not align`：数据陈旧或不属于目标交易日。
+- **Dirty Working Tree（已跟踪文件的修改）：**
+  - *现象：* CD 报错提示远程主机上已跟踪文件被修改。
+  - *原因：* 部署服务器上存在对版本控制文件的本地编辑。
+  - *修复：* 在服务器上 stash 或提交本地修改；若仍需部署，使用 `allow_dirty` 参数。
+  - *仅 chmod 变更：* 若修改仅涉及可执行位（常见于 `scripts/*.sh`），可提交
+    可执行位变更，或在部署主机上执行 `git config core.filemode false` 忽略
+    filemode 变更。
+  - *注意：* `.gitignore` 不影响已跟踪文件（如 `scripts/*.sh`）—— 若已跟踪的
+    脚本存在本地修改，无论 `.gitignore` 如何配置都会阻止部署。
+- **远程主机 .gitignore 过期：**
+  - *现象：* 仓库中已更新 `.gitignore`，但部署仍然失败，因为远程主机仍使用旧版。
+  - *原因：* `.gitignore` 变更仅在远程仓库 fetch 到包含该变更的 commit 后生效。
+    CD 工作流之前在工作树检查之前未执行 fetch，导致使用了过期的 `.gitignore`。
+  - *修复：* CD 工作流现已在检查工作树前执行 fetch，并将已知运行时数据路径
+    （`data/metrics/`、`data/normalized/`、`data/quality/`、`data/archive/`、
+    `data/notifications/`、`logs/`、`*.log`）排除在部署阻断之外。
+    未跟踪的运行时数据将触发警告但不阻断部署。
 
 新增 provider 必须实现 `MarketDataClient`；报告工作流不得直接调用原始 MCP
 工具，不得启用交易功能。

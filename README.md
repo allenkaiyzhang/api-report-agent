@@ -204,10 +204,27 @@ sudo journalctl -u market-report-agent -f
   - *Symptom:* The remote deployment precheck fails to resolve `github.com`.
   - *Cause:* Misconfigured or inactive DNS server under `/etc/resolv.conf`.
   - *Fix:* Verify internet connectivity on the server. Inspect and repair `/etc/resolv.conf` (e.g. add `nameserver 8.8.8.8`).
-- **Dirty Working Tree:**
-  - *Symptom:* CD or local scripts fail stating uncommitted local changes exist.
-  - *Cause:* Untracked or unstaged edits are present on the deployment server.
-  - *Fix:* Stash or commit local modifications on the server. If deployment is needed regardless, use the `allow_dirty` workflow parameter.
+- **Dirty Working Tree (tracked modifications):**
+  - *Symptom:* CD fails stating tracked files have been modified on the remote host.
+  - *Cause:* Local edits to version-controlled files exist on the deployment server.
+  - *Fix:* Stash or commit local modifications on the server. If deployment is needed
+    regardless, use the `allow_dirty` workflow parameter.
+  - *Chmod-only changes:* If the modifications are only executable-bit changes
+    (common for `scripts/*.sh`), either commit the executable bits or run
+    `git config core.filemode false` on the deploy host to ignore filemode changes.
+  - *Note:* `.gitignore` does not affect tracked files such as `scripts/*.sh` —
+    if a tracked script has local modifications, it will block deployment regardless
+    of `.gitignore` entries.
+- **Stale .gitignore on remote host:**
+  - *Symptom:* Deployment previously failed even after `.gitignore` was updated in the
+    repository, because the remote host still used the old `.gitignore`.
+  - *Cause:* `.gitignore` changes only apply after the remote repo has fetched the
+    commit containing them. The CD workflow previously checked the working tree
+    before fetching, so the stale `.gitignore` was used.
+  - *Fix:* The CD workflow now fetches before checking the working tree and excludes
+    known runtime data paths (`data/metrics/`, `data/normalized/`, `data/quality/`,
+    `data/archive/`, `data/notifications/`, `logs/`, `*.log`) from blocking
+    deployment. Untracked runtime data triggers a warning but does not block.
 - **Missing `MARKET_DATA_PROVIDER`:**
   - *Symptom:* Deployment exits with `ERROR: MARKET_DATA_PROVIDER is missing or empty in .env`.
   - *Cause:* The production `.env` file does not specify the provider.

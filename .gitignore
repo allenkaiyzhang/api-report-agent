@@ -25,6 +25,7 @@ env/
 data/
 logs/*
 !logs/.gitkeep
+deploy.log
 runtime/*
 !runtime/.gitkeep
 charts/*

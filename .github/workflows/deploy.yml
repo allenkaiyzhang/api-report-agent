@@ -91,32 +91,49 @@ jobs:
             fi
             echo "Network prechecks passed successfully!"
 
-            # 2. Worktree state verification
+            # 2. Fetch latest refs (ensures updated .gitignore is available)
+            echo "Fetching latest refs from origin..."
+            git fetch origin
+
+            # 3. Worktree state verification
             echo "Checking git working tree status..."
-            DIRTY_FILES=$(git status --porcelain)
-            if [ -n "$DIRTY_FILES" ]; then
-              echo "WARNING: Uncommitted local modifications exist on the remote host." >&2
-              git status --short >&2
+
+            # 3a. Tracked modifications — hard gate
+            TRACKED_MODS=$(git status --porcelain --untracked-files=no)
+            if [ -n "$TRACKED_MODS" ]; then
+              echo "ERROR: Tracked files have been modified on the remote host:" >&2
+              echo "$TRACKED_MODS" >&2
               if [ "$ALLOW_DIRTY" != "true" ]; then
-                echo "ERROR: Refusing deployment with dirty working tree. Commit/stash your changes or set allow_dirty to true." >&2
+                echo "" >&2
+                echo "Deployment blocked. To resolve:" >&2
+                echo "  - If these are chmod-only changes, set: git config core.filemode false" >&2
+                echo "    or commit the executable bits and push." >&2
+                echo "  - Otherwise, stash or commit your changes on the remote host." >&2
+                echo "  - Or set allow_dirty=true in the workflow dispatch." >&2
                 exit 1
               else
-                echo "Bypassing dirty tree check because allow_dirty=true is specified."
+                echo "Bypassing tracked modifications check because allow_dirty=true."
               fi
             fi
 
-            # 3. Checkout specific commit SHA
-            echo "Fetching and resetting checkout to target SHA: $TARGET_SHA"
-            git fetch origin
+            # 3b. Untracked files — warning only; runtime data is non-blocking
+            UNTRACKED=$(git ls-files --others --exclude-standard | grep -v -E '^(data/(metrics|normalized|quality|archive|notifications)/|logs/|.*\.log$)' || true)
+            if [ -n "$UNTRACKED" ]; then
+              echo "WARNING: Untracked files exist on the remote host (non-blocking):" >&2
+              echo "$UNTRACKED" >&2
+            fi
+
+            # 4. Checkout specific commit SHA
+            echo "Resetting checkout to target SHA: $TARGET_SHA"
             git reset --hard "$TARGET_SHA"
-            
-            # 4. Make deployment scripts executable
+
+            # 5. Make deployment scripts executable
             chmod +x scripts/deploy.sh scripts/post_deploy_verify.sh
 
-            # 5. Run deployment
+            # 6. Run deployment
             echo "Executing scripts/deploy.sh..."
             ./scripts/deploy.sh
 
-            # 6. Run post-deployment validation
+            # 7. Run post-deployment validation
             echo "Executing scripts/post_deploy_verify.sh..."
             ./scripts/post_deploy_verify.sh
