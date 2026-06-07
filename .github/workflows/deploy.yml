@@ -66,6 +66,9 @@ jobs:
             cd "$DEPLOY_DIR"
 
             # 1. Network prechecks
+            # TODO: If ECS/VPS GitHub access remains unstable, switch CD to artifact-based
+            # deploy where GitHub Actions packages and uploads the release instead of the
+            # server running git fetch.
             echo "Running network prechecks..."
             if ! getent hosts github.com >/dev/null 2>&1; then
               echo "ERROR: DNS Resolution Failed. Could not resolve host github.com" >&2
@@ -74,17 +77,16 @@ jobs:
               exit 1
             fi
 
-            if ! curl -I --connect-timeout 5 https://github.com >/dev/null 2>&1; then
-              echo "ERROR: Failed to establish HTTP connection to https://github.com (Access timeout)" >&2
-              echo "--- /etc/resolv.conf ---" >&2
-              cat /etc/resolv.conf >&2 || true
-              exit 1
+            if ! curl -I --connect-timeout 20 --retry 3 --retry-delay 5 https://github.com >/dev/null 2>&1; then
+              echo "WARNING: Failed to establish HTTP connection to https://github.com (this is non-fatal; git ls-remote will be the real gate)" >&2
             fi
 
             REPO_URL=$(git remote get-url origin)
             if ! git ls-remote "$REPO_URL" HEAD >/dev/null 2>&1; then
               echo "ERROR: git ls-remote failed for repository URL: $REPO_URL" >&2
               echo "Please verify SSH keys / access credentials on deployment server." >&2
+              echo "--- /etc/resolv.conf ---" >&2
+              cat /etc/resolv.conf >&2 || true
               exit 1
             fi
             echo "Network prechecks passed successfully!"
