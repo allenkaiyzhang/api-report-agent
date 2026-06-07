@@ -1,86 +1,100 @@
 name: Deploy to ECS
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Specific commit SHA to deploy (defaults to current trigger commit)'
+        required: false
+        type: string
+        default: ''
+      allow_dirty:
+        description: 'Allow deployment with dirty working tree'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: api-report-agent-ecs-deploy
   cancel-in-progress: true
 
 jobs:
-  ci:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install -U pip
-          if [ -f requirements.txt ]; then
-            .venv/bin/python -m pip install -r requirements.txt
-          fi
-          if [ -f requirements-dev.txt ]; then
-            .venv/bin/python -m pip install -r requirements-dev.txt
-          fi
-          .venv/bin/python -m pip install pytest
-
-      - name: Compile
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-        run: .venv/bin/python -m compileall .
-
-      - name: Test
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-          AI_ANALYSIS_ENABLED: "false"
-          AI_PROVIDER: mock
-          AI_FALLBACK_PROVIDER: mock
-          MARKET_DATA_PROVIDER: mock
-          EMAIL_ENABLED: "false"
-          DAILY_CHECK_EMAIL_ENABLED: "false"
-          RUN_LONGBRIDGE_API_TESTS: "0"
-          DEEPSEEK_API_KEY: ""
-          OPENAI_API_KEY: ""
-          GEMINI_API_KEY: ""
-        run: |
-          if [ -d tests ]; then
-            .venv/bin/python -m pytest -q
-          fi
-
   deploy:
     runs-on: ubuntu-latest
-    needs: ci
-    if: github.ref == 'refs/heads/main'
-
     steps:
-      - name: Deploy
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          TARGET_SHA: ${{ github.event.inputs.commit_sha || github.sha }}
+          ALLOW_DIRTY: ${{ github.event.inputs.allow_dirty || 'false' }}
         with:
           host: ${{ secrets.ECS_HOST }}
           username: ${{ secrets.ECS_USER }}
           key: ${{ secrets.ECS_SSH_KEY }}
           port: ${{ secrets.ECS_PORT }}
+          envs: TARGET_SHA,ALLOW_DIRTY
           script: |
-            set -e
+            set -euo pipefail
             whoami
-            cd /opt/api-report-agent
-            if ! git pull --ff-only; then
-              echo "git pull failed, restoring tracked local code changes on deployment host and retrying..."
-              git restore --staged .
-              git restore .
-              git pull --ff-only
+            
+            # Target path check
+            DEPLOY_DIR="/opt/api-report-agent"
+            if [ ! -d "$DEPLOY_DIR" ]; then
+              echo "ERROR: Deploy directory $DEPLOY_DIR does not exist on remote host!" >&2
+              exit 1
             fi
-            chmod +x scripts/deploy.sh scripts/tail_logs.sh
-            scripts/deploy.sh
-            # Run smoke test explicitly via venv Python (cross-platform .py)
-            .venv/bin/python scripts/smoke_test.py
+            cd "$DEPLOY_DIR"
+
+            # 1. Network prechecks
+            echo "Running network prechecks..."
+            if ! getent hosts github.com >/dev/null 2>&1; then
+              echo "ERROR: DNS Resolution Failed. Could not resolve host github.com" >&2
+              echo "--- /etc/resolv.conf ---" >&2
+              cat /etc/resolv.conf >&2 || true
+              exit 1
+            fi
+
+            if ! curl -I --connect-timeout 5 https://github.com >/dev/null 2>&1; then
+              echo "ERROR: Failed to establish HTTP connection to https://github.com (Access timeout)" >&2
+              echo "--- /etc/resolv.conf ---" >&2
+              cat /etc/resolv.conf >&2 || true
+              exit 1
+            fi
+
+            REPO_URL=$(git remote get-url origin)
+            if ! git ls-remote "$REPO_URL" HEAD >/dev/null 2>&1; then
+              echo "ERROR: git ls-remote failed for repository URL: $REPO_URL" >&2
+              echo "Please verify SSH keys / access credentials on deployment server." >&2
+              exit 1
+            fi
+            echo "Network prechecks passed successfully!"
+
+            # 2. Worktree state verification
+            echo "Checking git working tree status..."
+            DIRTY_FILES=$(git status --porcelain)
+            if [ -n "$DIRTY_FILES" ]; then
+              echo "WARNING: Uncommitted local modifications exist on the remote host." >&2
+              git status --short >&2
+              if [ "$ALLOW_DIRTY" != "true" ]; then
+                echo "ERROR: Refusing deployment with dirty working tree. Commit/stash your changes or set allow_dirty to true." >&2
+                exit 1
+              else
+                echo "Bypassing dirty tree check because allow_dirty=true is specified."
+              fi
+            fi
+
+            # 3. Checkout specific commit SHA
+            echo "Fetching and resetting checkout to target SHA: $TARGET_SHA"
+            git fetch origin
+            git reset --hard "$TARGET_SHA"
+            
+            # 4. Make deployment scripts executable
+            chmod +x scripts/deploy.sh scripts/post_deploy_verify.sh
+
+            # 5. Run deployment
+            echo "Executing scripts/deploy.sh..."
+            ./scripts/deploy.sh
+
+            # 6. Run post-deployment validation
+            echo "Executing scripts/post_deploy_verify.sh..."
+            ./scripts/post_deploy_verify.sh

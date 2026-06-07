@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Create virtual environment
+        run: python -m venv .venv
+
+      - name: Install dependencies
+        run: |
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: |
+          source .venv/bin/activate
+          python -m pytest -q
+
+      - name: Run smoke test
+        run: |
+          source .venv/bin/activate
+          python scripts/smoke_test.py
+
+      - name: Run mock health
+        run: |
+          source .venv/bin/activate
+          python scripts/market_report_agent.py --health --provider mock
+
+      - name: Run mock once
+        run: |
+          source .venv/bin/activate
+          python scripts/market_report_agent.py --once --provider mock
+
+      - name: Verify longbridge_mcp missing auth fails without mock fallback
+        run: |
+          source .venv/bin/activate
+          if python scripts/market_report_agent.py --health --provider longbridge_mcp > /tmp/mcp_health.json; then
+            echo "ERROR: longbridge_mcp health check succeeded without auth header!"
+            exit 1
+          fi
+          cat /tmp/mcp_health.json
+          if grep -iq "mock" /tmp/mcp_health.json; then
+            echo "ERROR: longbridge_mcp health check fallback to mock detected!"
+            exit 1
+          fi
+          echo "SUCCESS: longbridge_mcp failed as expected without auth and did not fallback to mock."
+
+      - name: Validate deploy.sh syntax
+        run: bash -n scripts/deploy.sh
+
+      - name: Render systemd unit
+        run: |
+          source .venv/bin/activate
+          python scripts/render_systemd_service.py \
+            --template systemd/market-report-agent.service.template \
+            --output /tmp/market-report-agent.service \
+            --deploy-root /opt/api-report-agent \
+            --venv-dir /opt/api-report-agent/.venv \
+            --user apiagent \
+            --group apiagent
+
+      - name: Validate rendered unit
+        run: |
+          if [ ! -f /tmp/market-report-agent.service ]; then
+            echo "ERROR: Rendered service file does not exist"
+            exit 1
+          fi
+          if grep -q "{{" /tmp/market-report-agent.service; then
+            echo "ERROR: Unresolved placeholders found in service file"
+            exit 1
+          fi
+          grep -F "WorkingDirectory=/opt/api-report-agent" /tmp/market-report-agent.service
+          grep -F "EnvironmentFile=/opt/api-report-agent/.env" /tmp/market-report-agent.service
+          grep -F "ExecStart=/opt/api-report-agent/.venv/bin/python scripts/market_report_agent.py" /tmp/market-report-agent.service
+
+      - name: Verify deploy.sh does not execute .sh files with python
+        run: |
+          if grep -E "(python|PYTHON).*\.sh" scripts/deploy.sh; then
+            echo "ERROR: deploy.sh appears to run shell scripts with Python!"
+            exit 1
+          fi
+          echo "SUCCESS: deploy.sh script execution pattern is correct."

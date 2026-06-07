@@ -94,6 +94,50 @@ retrieval. Real integration requires an externally authorized MCP session,
 successful tool discovery against the Longbridge endpoint, and compatible
 provider response schemas.
 
+## Validation Model
+
+This repository follows a multi-stage validation model designed to prevent environment drift between Windows development machines and the Linux production system:
+
+1. **Windows Local = Fast Local Pre-check:** Fast local verification of codebase, unit tests, and smoke scenarios via `scripts/verify.py`.
+2. **GitHub Actions Ubuntu CI = Merge Gate:** Rigorously runs on every `push` and `pull_request` to verify cross-platform correctness under Ubuntu with Python 3.11 and 3.12, syntax-checks Bash deployment scripts, and validates systemd templates.
+3. **workflow_dispatch CD = Manual Release Gate:** A manually triggered deployment workflow in GitHub Actions that targets a specific commit SHA, performs network prechecks (DNS and HTTP connectivity to GitHub), enforces uncommitted working tree checks, checks out the exact SHA, and orchestrates remote updates.
+4. **ECS/VPS Post-Deploy Verify = Production Gate:** Executes on the actual runtime server via `scripts/post_deploy_verify.sh` to verify the systemd unit, inspect log streams, run provider-specific health validation, and verify smoke tests.
+
+**Important Environment & Retrieval Rules:**
+- **Local passing does not prove Linux deployability:** Line-endings, shell syntax (bash syntax validation), and systemd service constructs must be checked on a Linux platform or via GitHub Actions.
+- **CI does not prove real Longbridge retrieval:** The automated CI runner and smoke tests use mocked connections and do not connect to live endpoints. Real integration tests are run out-of-band on staging or production.
+- **`longbridge_mcp` health check without auth must fail:** Running the health check on real `longbridge_mcp` without `LONGBRIDGE_MCP_AUTH_HEADER` configured is expected to fail with exit code `1` and a descriptive error message. It will never silently fall back to mock data.
+- **Real production retrieval requires:**
+  - `LONGBRIDGE_MCP_AUTH_HEADER` set with an externally authorized Bearer token.
+  - Successful tool discovery against the live Longbridge MCP endpoint.
+  - Compatibility of live responses with configured schemas.
+
+### Validation Commands
+
+#### Windows / Local:
+```bash
+python scripts/verify.py
+```
+
+#### Linux / Local:
+```bash
+python scripts/verify.py
+bash -n scripts/deploy.sh
+```
+
+#### GitHub Actions:
+Runs automatically on every `push` and `pull_request` to the `main` branch.
+
+#### ECS / VPS Deployment & Verification:
+To ensure environment hygiene, **always deploy only GitHub commits that have passed the Ubuntu CI gate**. Do not `scp` a dirty or untested Windows working tree to the production machine.
+
+Execute the manual CD workflow from the GitHub Actions tab (under the "Deploy to ECS" workflow) with the target commit SHA, or perform manual verification on the server:
+```bash
+cd /opt/api-report-agent
+# (Make sure to run post-deployment validation scripts)
+bash scripts/post_deploy_verify.sh
+```
+
 ## ECS / EC2 / VPS Deployment
 
 The deployment model is `venv + systemd`. Run:
@@ -144,6 +188,26 @@ sudo journalctl -u market-report-agent -f
 - `timestamps do not align`: provider data is stale or belongs to another session.
 - `Provider not configured`: set `MARKET_DATA_PROVIDER=longbridge_mcp`; use explicit
   mock only for tests.
+- **DNS Failure / `Could not resolve host github.com`:**
+  - *Symptom:* The remote deployment precheck fails to resolve `github.com`.
+  - *Cause:* Misconfigured or inactive DNS server under `/etc/resolv.conf`.
+  - *Fix:* Verify internet connectivity on the server. Inspect and repair `/etc/resolv.conf` (e.g. add `nameserver 8.8.8.8`).
+- **Dirty Working Tree:**
+  - *Symptom:* CD or local scripts fail stating uncommitted local changes exist.
+  - *Cause:* Untracked or unstaged edits are present on the deployment server.
+  - *Fix:* Stash or commit local modifications on the server. If deployment is needed regardless, use the `allow_dirty` workflow parameter.
+- **Missing `MARKET_DATA_PROVIDER`:**
+  - *Symptom:* Deployment exits with `ERROR: MARKET_DATA_PROVIDER is missing or empty in .env`.
+  - *Cause:* The production `.env` file does not specify the provider.
+  - *Fix:* Ensure `.env` is populated with `MARKET_DATA_PROVIDER=longbridge_mcp` or `MARKET_DATA_PROVIDER=mock`.
+- **Systemd Restart Failure:**
+  - *Symptom:* `deploy.sh` fails with `ERROR: market-report-agent failed to start`.
+  - *Cause:* Missing folder permissions, invalid `.env` configuration, or python runtime error in background execution.
+  - *Fix:* Run `systemctl status market-report-agent` or `journalctl -u market-report-agent -n 100 --no-pager` to inspect traceback.
+- **Smoke Test Failure:**
+  - *Symptom:* Smoke tests fail during the verification phase.
+  - *Cause:* Import error, dependency mismatch, or invalid JSON schemas.
+  - *Fix:* Ensure dependencies match `requirements.txt` and python versions are correct. Run `python scripts/smoke_test.py --verbose`.
 
 ## Extension Boundary
 
